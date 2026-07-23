@@ -1,0 +1,9 @@
+# Reference clones (see REFERENCES.md) — fetched, not vendored
+vendor/
+
+# Sample parts are fetched by samples/fetch.sh
+samples/*.SLDPRT
+
+__pycache__/
+*.x_b
+*.x_t
