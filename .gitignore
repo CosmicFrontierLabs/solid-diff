@@ -7,3 +7,4 @@ samples/*.SLDPRT
 __pycache__/
 *.x_b
 *.x_t
+.venv/

@@ -1,0 +1,9 @@
+[project]
+name = "solid-diff"
+version = "0.1.0"
+description = "Visual diffs of SolidWorks part files"
+requires-python = ">=3.10"
+dependencies = ["numpy", "scipy"]
+
+[tool.setuptools]
+packages = ["solid_diff"]

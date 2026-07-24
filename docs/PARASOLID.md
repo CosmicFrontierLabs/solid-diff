@@ -90,12 +90,10 @@ inline, which ps-parser resolves.
 1. **Deltas transmit** doesn't parse (extended node types). Probably
    ignorable: the partition transmit alone contains the complete solid.
    Verify on more complex parts (multi-body, surfaces, sheet metal).
-2. **B-rep → mesh.** ps-parser gives topology + geometry nodes (planes,
-   circles, NURBS); rendering needs surface evaluation/tessellation. Options:
-   re-serialize to standard `.x_b` (prepend text banner; ps-parser has a
-   `writer.py`) and feed any Parasolid-consuming converter, or evaluate the
-   (documented) XT geometry ourselves, or diff at topology/attribute level
-   plus use `Contents/DisplayLists` tessellation for pixels.
+2. **B-rep → mesh: done** — see `docs/BREP2MESH.md` and
+   `solid_diff/brep2mesh.py`. We evaluate the XT geometry ourselves and
+   tessellate to OBJ/STL. Faces on unsupported surfaces (notably
+   `BLENDED_EDGE` fillets) currently get a best-fit-plane fallback.
 3. **Coverage:** only Config-0 single-config parts tested; test multi-config,
    assemblies (`.SLDASM`), and current (2024+) files — ideally real parts
    from the PDM vault.

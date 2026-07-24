@@ -15,12 +15,15 @@ with pure open-source Python** — see [`docs/PARASOLID.md`](docs/PARASOLID.md).
 ./samples/fetch.sh                                    # grab public test parts
 python3 -m solid_diff.psscan  samples/part.SLDPRT     # scan for Parasolid data
 python3 -m solid_diff.extract samples/part.SLDPRT -o out/   # carve .x_b files
+python3 -m solid_diff.brep2mesh samples/part.SLDPRT -o part.obj --stl part.stl
 ```
 
 Docs:
 
 - [`docs/PARASOLID.md`](docs/PARASOLID.md) — how the B-rep is embedded and
   extracted (container streams → zlib sections → Parasolid binary transmit).
+- [`docs/BREP2MESH.md`](docs/BREP2MESH.md) — B-rep → triangle mesh
+  tessellator (curve/surface evaluation, seam cutting, validation results).
 - [`REFERENCES.md`](REFERENCES.md) — survey of everything that can read the
   SLDPRT format (open-source parsers, converters, commercial SDKs) and prior
   art in CAD diffing.
