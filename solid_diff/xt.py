@@ -56,7 +56,10 @@ class Graph:
         return list(self.chain(face.get("loop")))
 
     def loop_halfedges(self, loop: dict) -> list[dict]:
-        return list(self.chain(loop.get("halfedge"), link="forward"))
+        # Empirically the 'backward' link visits halfedges in the order that
+        # chains their sense-oriented segments head-to-tail (the 'forward'
+        # link yields the same cycle reversed).
+        return list(self.chain(loop.get("halfedge"), link="backward"))
 
     def attributes(self, node: dict) -> list[dict]:
         """All ATTRIBUTE nodes owned by node, as (identifier, values) pairs."""

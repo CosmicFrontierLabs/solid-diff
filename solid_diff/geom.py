@@ -88,6 +88,29 @@ class Ellipse(Curve):
         return float(np.arctan2(np.dot(q, self.y) / self.r2, np.dot(q, self.x) / self.r1)) % TWO_PI
 
 
+def deboor_basis(knots, degree, ncp, t) -> tuple[int, np.ndarray]:
+    """de Boor: (span, values of the degree-p basis functions active at t)."""
+    k, p = knots, degree
+    t0, t1 = k[p], k[ncp]
+    t = min(max(t, t0), t1 - 1e-14 * max(1.0, abs(t1)))
+    span = int(np.searchsorted(k, t, side="right") - 1)
+    span = min(max(span, p), ncp - 1)
+    N = np.zeros(p + 1)
+    N[0] = 1.0
+    left = np.zeros(p + 1)
+    right = np.zeros(p + 1)
+    for j in range(1, p + 1):
+        left[j] = t - k[span + 1 - j]
+        right[j] = k[span + j] - t
+        saved = 0.0
+        for r in range(j):
+            tmp = N[r] / (right[r + 1] + left[j - r])
+            N[r] = saved + right[r + 1] * tmp
+            saved = left[j - r] * tmp
+        N[j] = saved
+    return span, N
+
+
 class Nurbs(Curve):
     """B_CURVE via its NURBS_CURVE / BSPLINE_VERTICES / KNOT_SET / KNOT_MULT."""
 
@@ -118,25 +141,7 @@ class Nurbs(Curve):
         return self.t0, self.t1
 
     def _basis(self, t: float) -> tuple[int, np.ndarray]:
-        """de Boor basis values of the degree-p functions active at t."""
-        k, p = self.knots, self.degree
-        t = min(max(t, self.t0), self.t1 - 1e-14 * max(1.0, abs(self.t1)))
-        span = int(np.searchsorted(k, t, side="right") - 1)
-        span = min(max(span, p), len(self.cp) - 1)
-        N = np.zeros(p + 1)
-        N[0] = 1.0
-        left = np.zeros(p + 1)
-        right = np.zeros(p + 1)
-        for j in range(1, p + 1):
-            left[j] = t - k[span + 1 - j]
-            right[j] = k[span + j] - t
-            saved = 0.0
-            for r in range(j):
-                tmp = N[r] / (right[r + 1] + left[j - r])
-                N[r] = saved + right[r + 1] * tmp
-                saved = left[j - r] * tmp
-            N[j] = saved
-        return span, N
+        return deboor_basis(self.knots, self.degree, len(self.cp), t)
 
     def eval(self, t):
         t = np.atleast_1d(t).astype(float)
@@ -242,6 +247,8 @@ class Surface:
     period_u: float | None = None
     period_v: float | None = None
     sense_sign: int = 1  # surface node's own sense flag: -1 flips its normal
+    # natural finite parameter bounds (e.g. sphere poles), (lo, hi) or None
+    v_bounds: tuple | None = None
 
     def eval(self, uv: np.ndarray) -> np.ndarray:  # (n,2) -> (n,3)
         raise NotImplementedError
@@ -311,12 +318,12 @@ class Cone(Surface):
         self.a = _unit(node["axis"])
         self.r = float(node["radius"])
         # sin_angle/cos_angle in XT; some schemas store "angle"
-        if node.get("sin_angle") is not None:
-            self.tan = float(node["sin_angle"]) / float(node["cos_angle"])
-        else:
-            self.tan = float(np.tan(node["angle"]))
+        self.tan = float(node["sin_half_angle"]) / float(node["cos_half_angle"])
         self.x = _unit(node["x_axis"])
         self.y = np.cross(self.a, self.x)
+        if abs(self.tan) > 1e-12:  # apex: where the radius reaches zero
+            v_apex = -self.r / self.tan
+            self.v_bounds = (v_apex, None) if self.tan > 0 else (None, v_apex)
 
     def eval(self, uv):
         uv = np.atleast_2d(uv)
@@ -335,6 +342,7 @@ class Cone(Surface):
 
 class Sphere(Surface):
     period_u = TWO_PI
+    v_bounds = (-np.pi / 2, np.pi / 2)
 
     def __init__(self, node):
         self.c = np.asarray(node["centre"], dtype=float)
@@ -457,6 +465,254 @@ class OffsetSurf(Surface):
         return uv
 
 
+class NurbsSurf(Surface):
+    """B_SURFACE via NURBS_SURF: tensor-product B-spline, Newton inversion."""
+
+    def __init__(self, graph, bsurf_node):
+        ns = graph.deref(bsurf_node["nurbs"])
+        self.pu = int(ns["u_degree"])
+        self.pv = int(ns["v_degree"])
+        self.nu = int(ns["n_u_vertices"])
+        self.nv = int(ns["n_v_vertices"])
+        dim = int(ns["vertex_dim"])
+        verts = np.asarray(graph.deref(ns["bspline_vertices"])["vertices"],
+                           dtype=float).reshape(-1, dim)
+        self.rational = bool(ns["rational"])
+        if self.rational:
+            cp = verts[:, :3] / verts[:, 3:4]
+            w = verts[:, 3]
+        else:
+            cp = verts[:, :3]
+            w = np.ones(len(verts))
+        # XT stores the control net v-fastest: vertex (i_u, i_v) at i_u*nv+i_v.
+        self.cp = cp.reshape(self.nu, self.nv, 3)
+        self.w = w.reshape(self.nu, self.nv)
+        uk = np.asarray(graph.deref(ns["u_knots"])["knots"], dtype=float)
+        um = np.asarray(graph.deref(ns["u_knot_mult"])["mult"], dtype=int)
+        vk = np.asarray(graph.deref(ns["v_knots"])["knots"], dtype=float)
+        vm = np.asarray(graph.deref(ns["v_knot_mult"])["mult"], dtype=int)
+        self.uknots = np.repeat(uk, um)
+        self.vknots = np.repeat(vk, vm)
+        self.u0, self.u1 = self.uknots[self.pu], self.uknots[self.nu]
+        self.v0, self.v1 = self.vknots[self.pv], self.vknots[self.nv]
+        if ns.get("u_periodic") or ns.get("u_closed"):
+            self.period_u = self.u1 - self.u0
+        if ns.get("v_periodic") or ns.get("v_closed"):
+            self.period_v = self.v1 - self.v0
+        # dense sample cache for inversion seeding
+        us = np.linspace(self.u0, self.u1, max(24, 4 * self.nu))
+        vs = np.linspace(self.v0, self.v1, max(24, 4 * self.nv))
+        gu, gv = np.meshgrid(us, vs, indexing="ij")
+        self._seed_uv = np.column_stack([gu.ravel(), gv.ravel()])
+        self._seed_pts = self.eval(self._seed_uv)
+
+    def _clamp(self, u, v):
+        if self.period_u:
+            u = self.u0 + (u - self.u0) % self.period_u
+        else:
+            u = min(max(u, self.u0), self.u1)
+        if self.period_v:
+            v = self.v0 + (v - self.v0) % self.period_v
+        else:
+            v = min(max(v, self.v0), self.v1)
+        return u, v
+
+    def eval(self, uv):
+        uv = np.atleast_2d(uv)
+        out = np.empty((len(uv), 3))
+        for i, (u, v) in enumerate(uv):
+            u, v = self._clamp(u, v)
+            su, Nu = deboor_basis(self.uknots, self.pu, self.nu, u)
+            sv, Nv = deboor_basis(self.vknots, self.pv, self.nv, v)
+            iu = slice(su - self.pu, su + 1)
+            iv = slice(sv - self.pv, sv + 1)
+            W = np.outer(Nu, Nv) * self.w[iu, iv]
+            out[i] = np.einsum("uv,uvk->k", W, self.cp[iu, iv]) / W.sum()
+        return out
+
+    def inv(self, pts):
+        pts = np.atleast_2d(pts)
+        out = np.empty((len(pts), 2))
+        h = 1e-6 * max(self.u1 - self.u0, self.v1 - self.v0)
+        for i, p in enumerate(pts):
+            j = int(np.argmin(((self._seed_pts - p) ** 2).sum(axis=1)))
+            uv = self._seed_uv[j].copy()
+            for _ in range(25):  # Gauss-Newton on S(uv) - p
+                s = self.eval(uv[None])[0]
+                r = s - p
+                du = (self.eval(uv[None] + [h, 0])[0] - self.eval(uv[None] - [h, 0])[0]) / (2 * h)
+                dv = (self.eval(uv[None] + [0, h])[0] - self.eval(uv[None] - [0, h])[0]) / (2 * h)
+                J = np.column_stack([du, dv])
+                JtJ = J.T @ J
+                if np.linalg.det(JtJ) < 1e-30:
+                    break
+                step = np.linalg.solve(JtJ, J.T @ r)
+                uv -= step
+                uv[0], uv[1] = self._clamp(uv[0], uv[1])
+                if np.linalg.norm(step) < 1e-12:
+                    break
+            out[i] = uv
+        return out
+
+
+class BlendedEdge(Surface):
+    """Rolling-ball fillet: arc cross-sections swept along the spine.
+
+    S(u, v): the ball center c = spine(u); the arc runs between the ball's
+    tangency directions towards the two support surfaces, slerped by
+    v in [0, 1]. Supports in SolidWorks files are the walls offset by the
+    blend radius (center-locus form), so the tangency *directions* are
+    recovered by projecting c onto each support's BASE wall; if a support is
+    not an offset (distance to c is already ~r) the foot itself is used.
+    """
+
+    def __init__(self, graph, node):
+        self.r = float(node["range"][0])
+        self.spine = make_curve(graph, graph.deref(node["spine"]))
+        if self.spine is None:
+            raise ValueError("unsupported blend spine curve")
+        supports = []
+        for sid in node["surface"]:
+            snode = graph.deref(sid)
+            if snode is None:
+                raise ValueError("missing blend support")
+            if snode["node_name"] == "OFFSET_SURF":
+                snode = graph.deref(snode["surface"])  # project onto base wall
+            s = make_surface(graph, snode)
+            if s is None:
+                raise ValueError(f"unsupported blend support {snode['node_name']}")
+            supports.append(s)
+        self.s1, self.s2 = supports
+        if self.spine.periodic:
+            self.period_u = self.spine.periodic
+        try:
+            self._t0, self._t1 = self.spine.full_range()
+        except ValueError:
+            self._t0, self._t1 = 0.0, 1.0
+        ts = np.linspace(self._t0, self._t1, 256)
+        self._ts = ts
+        self._spts = self.spine.eval(ts)
+
+    def _dirs(self, u):
+        """Unit directions from ball center to each tangency point."""
+        c = self.spine.eval(np.atleast_1d(u))[0]
+        out = []
+        for s in (self.s1, self.s2):
+            foot = s.eval(s.inv(c[None]))[0]
+            d = foot - c
+            norm = np.linalg.norm(d)
+            if norm < 1e-12:
+                raise ValueError("degenerate blend section")
+            out.append(d / norm)
+        return c, out[0], out[1]
+
+    def eval(self, uv):
+        uv = np.atleast_2d(uv)
+        out = np.empty((len(uv), 3))
+        for i, (u, v) in enumerate(uv):
+            c, d1, d2 = self._dirs(u)
+            ang = np.arccos(np.clip(d1 @ d2, -1, 1))
+            if ang < 1e-9:
+                out[i] = c + self.r * d1
+                continue
+            # slerp between the tangency directions
+            w1 = np.sin((1 - v) * ang) / np.sin(ang)
+            w2 = np.sin(v * ang) / np.sin(ang)
+            d = w1 * d1 + w2 * d2
+            out[i] = c + self.r * d / np.linalg.norm(d)
+        return out
+
+    def inv(self, pts):
+        pts = np.atleast_2d(pts)
+        out = np.empty((len(pts), 2))
+        for i, p in enumerate(pts):
+            j = int(np.argmin(((self._spts - p) ** 2).sum(axis=1)))
+            u = float(self._ts[j])
+            # parabolic refine on spine distance
+            lo = self._ts[max(0, j - 1)]
+            hi = self._ts[min(len(self._ts) - 1, j + 1)]
+            for _ in range(30):
+                m1, m2 = lo + (hi - lo) / 3, hi - (hi - lo) / 3
+                if (np.linalg.norm(self.spine.eval(m1)[0] - p)
+                        < np.linalg.norm(self.spine.eval(m2)[0] - p)):
+                    hi = m2
+                else:
+                    lo = m1
+            u = (lo + hi) / 2
+            c, d1, d2 = self._dirs(u)
+            d = p - c
+            dn = d / max(np.linalg.norm(d), 1e-30)
+            ang = np.arccos(np.clip(d1 @ d2, -1, 1))
+            a1 = np.arccos(np.clip(d1 @ dn, -1, 1))
+            out[i] = (u, a1 / ang if ang > 1e-9 else 0.0)
+        return out
+
+
+class SpunSurf(Surface):
+    """Profile curve revolved about an axis: u = angle, v = profile param."""
+
+    period_u = TWO_PI
+
+    def __init__(self, graph, node):
+        self.profile = make_curve(graph, graph.deref(node["section"]))
+        if self.profile is None:
+            raise ValueError("unsupported spun-surface profile curve")
+        self.p0 = np.asarray(node["pvec"], dtype=float)
+        self.a = _unit(node["axis"])
+        try:
+            t0, t1 = self.profile.full_range()
+        except ValueError:
+            t0, t1 = 0.0, 1.0
+        ts = np.linspace(t0, t1, 256)
+        self._ts = ts
+        self._ppts = self.profile.eval(ts)
+        # profile in (radius, height) coordinates about the axis
+        q = self._ppts - self.p0
+        h = q @ self.a
+        self._prof_rh = np.column_stack([np.linalg.norm(q - np.outer(h, self.a), axis=1), h])
+
+    def eval(self, uv):
+        uv = np.atleast_2d(uv)
+        out = np.empty((len(uv), 3))
+        for i, (u, v) in enumerate(uv):
+            p = self.profile.eval(np.atleast_1d(v))[0]
+            q = p - self.p0
+            h = q @ self.a
+            rad_vec = q - h * self.a
+            r = np.linalg.norm(rad_vec)
+            if r < 1e-15:
+                out[i] = p
+                continue
+            x = rad_vec / r
+            y = np.cross(self.a, x)
+            out[i] = self.p0 + h * self.a + r * (np.cos(u) * x + np.sin(u) * y)
+        return out
+
+    def inv(self, pts):
+        pts = np.atleast_2d(pts)
+        q = pts - self.p0
+        h = q @ self.a
+        rad = q - np.outer(h, self.a)
+        r = np.linalg.norm(rad, axis=1)
+        out = np.empty((len(pts), 2))
+        for i in range(len(pts)):
+            d2 = ((self._prof_rh - [r[i], h[i]]) ** 2).sum(axis=1)
+            j = int(np.argmin(d2))
+            out[i, 1] = self._ts[j]
+            # angle of the point around the axis relative to profile position
+            pq = self._ppts[j] - self.p0
+            ph = pq @ self.a
+            px = pq - ph * self.a
+            pxn = np.linalg.norm(px)
+            if pxn < 1e-15 or r[i] < 1e-15:
+                out[i, 0] = 0.0
+                continue
+            x = px / pxn
+            y = np.cross(self.a, x)
+            out[i, 0] = np.arctan2(rad[i] @ y, rad[i] @ x) % TWO_PI
+        return out
+
+
 def make_surface(graph, node) -> Surface | None:
     """Build an evaluator for an XT surface node, or None if unsupported."""
     kind = node["node_name"]
@@ -476,8 +732,14 @@ def make_surface(graph, node) -> Surface | None:
             surf = SweptSurf(graph, node)
         elif kind == "OFFSET_SURF":
             surf = OffsetSurf(graph, node)
+        elif kind == "SPUN_SURF":
+            surf = SpunSurf(graph, node)
+        elif kind == "B_SURFACE":
+            surf = NurbsSurf(graph, node)
+        elif kind == "BLENDED_EDGE":
+            surf = BlendedEdge(graph, node)
     except (ValueError, KeyError, TypeError):
         return None
     if surf is not None and node.get("sense") == "-":
         surf.sense_sign = -1
-    return surf  # None for BLENDED_EDGE, SPUN_SURF, B_SURFACE, ... -> fallback
+    return surf  # anything unhandled -> planar fallback in tess.py
