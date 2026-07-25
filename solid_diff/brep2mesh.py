@@ -14,23 +14,36 @@ import sys
 from pathlib import Path
 
 from .container import parse_file
-from .extract import GEOMETRY_STREAM_RE, carve_zlib, describe_transmit
+from .extract import carve_zlib, describe_transmit
 from .tess import Mesh, tessellate, write_obj, write_stl
 from .xt import Graph
 
 
 def graphs_from_sldprt(path: str) -> list[tuple[str, Graph]]:
-    """(stream name, node graph) for each embedded partition transmit."""
+    """(stream name, node graph) for embedded transmits that carry faces.
+
+    Where the solid lives varies by SolidWorks era: older 2015+ files keep it
+    in `Contents/Config-N-Partition`; newer (~2024) files store an empty
+    partition and put the bodies in `Config-N-FeatureBodies/LocalBodies`.
+    Rather than hardcode stream names, carve every stream and keep every
+    parseable partition/part transmit, sorted by face count (best first).
+    Ghost partitions are excluded (reference wire bodies, not the solid).
+    """
     swx = parse_file(path)
     out = []
     for name, data in swx.streams.items():
-        m = GEOMETRY_STREAM_RE.match(name)
-        if not m or m.group(1) != "Partition":
-            continue  # Ghost/ResolvedFeatures don't carry the display solid
+        if name.endswith("-GhostPartition"):
+            continue
         for _, blob in carve_zlib(data):
             info = describe_transmit(blob)
-            if info and info[0] == "partition":
-                out.append((name, Graph.from_bytes(blob)))
+            if not info or info[0] == "deltas":
+                continue
+            try:
+                g = Graph.from_bytes(blob)
+            except Exception:
+                continue
+            out.append((name, g))
+    out.sort(key=lambda ng: len(ng[1].by_type("FACE")), reverse=True)
     return out
 
 
