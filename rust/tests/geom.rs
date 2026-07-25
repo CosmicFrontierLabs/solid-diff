@@ -960,3 +960,56 @@ fn deboor_partition_of_unity() {
     let (_s, b) = deboor_basis(&knots, 3, ncp, 5.0);
     close(b.iter().sum::<f64>(), 1.0, 1e-12);
 }
+
+/// A circular profile revolved about an axis — a tube bend, as found on the
+/// `11245A82` pull handle. `v` runs around the circular section, so it must be
+/// reported as periodic: without that, the tessellator places its "provably
+/// outside" trimming anchor just below the smallest `v`, which on a wrapped
+/// parameter is actually *inside* the tube, and the face collapses.
+#[test]
+fn spun_surf_with_a_closed_profile_is_periodic_in_v() {
+    let nodes = vec![
+        node(
+            1,
+            "SPUN_SURF",
+            vec![
+                ("profile", ptr(2)),
+                ("base", v3(0.0, 0.0, 0.0)),
+                ("axis", v3(0.0, 0.0, 1.0)),
+                ("x_axis", v3(1.0, 0.0, 0.0)),
+            ],
+        ),
+        // circle of radius 0.25 centred 2.0 out along x, in the xz plane
+        node(
+            2,
+            "CIRCLE",
+            vec![
+                ("centre", v3(2.0, 0.0, 0.0)),
+                ("normal", v3(0.0, 1.0, 0.0)),
+                ("x_axis", v3(1.0, 0.0, 0.0)),
+                ("radius", f(0.25)),
+            ],
+        ),
+    ];
+    let (_g, s) = surface_of(nodes, 1);
+    assert_eq!(s.period_u(), Some(TWO_PI), "revolve angle wraps");
+    assert_eq!(
+        s.period_v(),
+        Some(TWO_PI),
+        "a closed profile makes v wrap too"
+    );
+    // One full period along v returns to the same point.
+    for k in 0..6 {
+        let uv = [k as f64 * 0.9, k as f64 * 0.7];
+        close3(s.eval([uv[0], uv[1] + TWO_PI]), s.eval(uv), 1e-9);
+    }
+    // Every point sits on the tube: distance to the spine circle is the
+    // section radius.
+    for k in 0..12 {
+        let uv = [k as f64 * 0.5, k as f64 * 0.4];
+        let p = s.eval(uv);
+        let spine_r = norm([p[0], p[1], 0.0]);
+        let d = ((spine_r - 2.0).powi(2) + p[2] * p[2]).sqrt();
+        close(d, 0.25, 1e-9);
+    }
+}

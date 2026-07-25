@@ -443,6 +443,9 @@ pub struct SpunSurf {
     ppts: Vec<P3>,
     /// Profile samples in (radius, height) coordinates about the axis.
     prof_rh: Vec<P2>,
+    /// v runs along the profile, so it is periodic exactly when the profile
+    /// curve closes (a revolved circle — a tube bend — is the common case).
+    period_v: Option<f64>,
     sense_sign: f64,
 }
 
@@ -474,6 +477,7 @@ impl SpunSurf {
                 [norm(sub(q, scale(a, h))), h]
             })
             .collect();
+        let period_v = profile.period();
         Some(SpunSurf {
             profile,
             p0,
@@ -481,6 +485,7 @@ impl SpunSurf {
             ts,
             ppts,
             prof_rh,
+            period_v,
             sense_sign: 1.0,
         })
     }
@@ -536,6 +541,10 @@ impl Surface for SpunSurf {
 
     fn period_u(&self) -> Option<f64> {
         Some(TWO_PI)
+    }
+
+    fn period_v(&self) -> Option<f64> {
+        self.period_v
     }
     impl_sense!();
 }
