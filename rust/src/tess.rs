@@ -845,16 +845,38 @@ fn tessellate_face(
                 cnt += 1.0;
             }
         }
-        let _ = umax;
         // If the domain was extended to a natural bound, "beyond the loops in
-        // v" is outside the parameter domain, not outside the face.
+        // v" is outside the parameter *domain*, not outside the face.
         let pole_extended = surf.v_bounds().is_some() && (vmax - vmin) < 0.5 * (hi[1] - lo[1]);
+
+        // A provably-outside anchor exists in a direction when the loops do
+        // not cover it completely:
+        //   * open direction  -> anywhere beyond their extent;
+        //   * periodic one    -> the gap between max and min+period, which
+        //     must be empty because a face covering it would have to wind,
+        //     and winding implies an extent of at least one full period.
         // Irrational-ish offsets keep the ray off grid and seam lines, where
         // exact crossings make parity fragile.
-        if surf.period_v().is_none() && !pole_extended {
-            outside = Some([usum / cnt + 0.3717 * su, vmin - 2.637 * sv]);
-        } else if surf.period_u().is_none() {
-            outside = Some([umin - 2.637 * su, vsum / cnt + 0.3717 * sv]);
+        // The periodic gap is only trusted when it is comfortably wide: a
+        // sliver gap usually means the loops really do cover the period and
+        // merely fall a hair short through sampling, and an anchor sitting
+        // almost on the boundary classifies unreliably.
+        let free = |lo_v: f64, hi_v: f64, period: Option<f64>, step: f64| -> Option<f64> {
+            match period {
+                None => Some(lo_v - 2.637 * step),
+                Some(p) if p - (hi_v - lo_v) > 4.0 * step => Some((hi_v + lo_v + p) / 2.0),
+                Some(_) => None,
+            }
+        };
+        let v_free = if pole_extended {
+            None
+        } else {
+            free(vmin, vmax, surf.period_v(), sv)
+        };
+        if let Some(v) = v_free {
+            outside = Some([usum / cnt + 0.3717 * su, v]);
+        } else if let Some(u) = free(umin, umax, surf.period_u(), su) {
+            outside = Some([u, vsum / cnt + 0.3717 * sv]);
         }
     }
     let left_inside = surf.sense_sign() * face_sign > 0.0;
