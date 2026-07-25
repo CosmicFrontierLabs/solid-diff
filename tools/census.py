@@ -72,6 +72,50 @@ def census_file(path: str) -> dict:
     return rec
 
 
+def _child(path: str, mem_gb: int, conn):
+    """Census one file under a hard address-space cap, in a forked child.
+
+    Some corpus files drive the parser into runaway allocation (see the
+    OOM-killed sweep on 2026-07-25), so each file is isolated: a blown cap
+    kills only its own child.
+    """
+    import resource
+
+    limit = mem_gb * 1024**3
+    resource.setrlimit(resource.RLIMIT_AS, (limit, limit))
+    try:
+        conn.send(census_file(path))
+    except MemoryError:
+        conn.send({"file": Path(path).name, "status": f"oom>{mem_gb}GB"})
+    except Exception as e:
+        conn.send({"file": Path(path).name, "status": f"crash: {str(e)[:120]}"})
+    finally:
+        conn.close()
+
+
+def census_isolated(path: str, mem_gb: int = 6, timeout: int = 180) -> dict:
+    import multiprocessing as mp
+
+    parent, child = mp.Pipe(duplex=False)
+    proc = mp.Process(target=_child, args=(path, mem_gb, child), daemon=True)
+    proc.start()
+    child.close()
+    rec = None
+    if parent.poll(timeout):
+        try:
+            rec = parent.recv()
+        except EOFError:
+            rec = None
+    proc.join(5)
+    if proc.is_alive():
+        proc.terminate()
+        proc.join(5)
+    if rec is None:
+        status = f"timeout>{timeout}s" if proc.exitcode is None else f"killed:{proc.exitcode}"
+        rec = {"file": Path(path).name, "status": status}
+    return rec
+
+
 def main():
     src = Path(sys.argv[1])
     done = set()
@@ -87,7 +131,7 @@ def main():
     t0 = time.time()
     for i, p in enumerate(files):
         try:
-            rec = census_file(str(p))
+            rec = census_isolated(str(p))
         except Exception as e:
             rec = {"file": p.name, "status": f"crash: {e}",
                    "trace": traceback.format_exc()[-500:]}
