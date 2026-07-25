@@ -10,7 +10,10 @@ use solid_diff::render::{render_mesh_svg, svg_document, Order, RenderOptions};
 use solid_diff::{body_graphs, container, mesh_file, sections, tess, xt, Graph};
 
 #[derive(Parser)]
-#[command(name = "solid-diff", about = "Read, mesh and render SolidWorks part files")]
+#[command(
+    name = "solid-diff",
+    about = "Read, mesh and render SolidWorks part files"
+)]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -308,7 +311,11 @@ fn cmd_render(
                 let mut o = opts.clone();
                 o.title = Some(title);
                 frags.push(render_mesh_svg(&mesh, &o));
-                println!("{}: {} triangles rendered", path.display(), mesh.triangles.len());
+                println!(
+                    "{}: {} triangles rendered",
+                    path.display(),
+                    mesh.triangles.len()
+                );
             }
             Err(e) => {
                 println!("{}: FAILED: {e}", path.display());

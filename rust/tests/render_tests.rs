@@ -168,7 +168,10 @@ fn cube_emits_one_polygon_per_triangle_and_all_sharp_edges() {
     for k in 0..2 {
         assert!(lo[k] >= pad_px - 0.2 && hi[k] <= size - pad_px + 0.2);
         // centred: equal slack either side
-        assert!(((lo[k] - 0.0) - (size - hi[k])).abs() < 0.3, "axis {k} not centred");
+        assert!(
+            ((lo[k] - 0.0) - (size - hi[k])).abs() < 0.3,
+            "axis {k} not centred"
+        );
     }
 }
 
@@ -204,7 +207,9 @@ fn colors_come_from_map_then_mesh_then_default() {
             ..Default::default()
         },
     ));
-    assert!(over.iter().all(|p| p.fill.1 <= p.fill.0 && p.fill.2 <= p.fill.0));
+    assert!(over
+        .iter()
+        .all(|p| p.fill.1 <= p.fill.0 && p.fill.2 <= p.fill.0));
 }
 
 #[test]
@@ -233,7 +238,10 @@ fn back_faces_get_the_interior_tint_and_front_faces_are_lit() {
     let front = polys_of(&render_mesh_svg(&tri(false), &opts))[0].fill;
     assert_eq!(front.0, front.1);
     assert_eq!(front.1, front.2);
-    assert!(front.0 > back.0, "lit front {front:?} vs shadowed back {back:?}");
+    assert!(
+        front.0 > back.0,
+        "lit front {front:?} vs shadowed back {back:?}"
+    );
 }
 
 // ── the key ordering proof ──────────────────────────────────────────────────
@@ -291,7 +299,10 @@ fn bsp_splits_piercing_triangles_and_paints_far_fragment_first() {
     // And the depths agree: strictly decreasing (farthest painted first).
     let d = paint_order_depths(&piercing_pair(), &opts);
     assert_eq!(d.len(), 3);
-    assert!(d[0] > d[1] && d[1] > d[2], "depths not back-to-front: {d:?}");
+    assert!(
+        d[0] > d[1] && d[1] > d[2],
+        "depths not back-to-front: {d:?}"
+    );
     assert!(d[0] > 0.0 && d[2] < 0.0);
 }
 
@@ -401,7 +412,10 @@ fn open_boundary_edges_are_stroked() {
         &[1, 1],
         &[],
     );
-    assert_eq!(count(&render_mesh_svg(&sq, &RenderOptions::default()), "<line "), 4);
+    assert_eq!(
+        count(&render_mesh_svg(&sq, &RenderOptions::default()), "<line "),
+        4
+    );
 }
 
 #[test]
@@ -456,7 +470,10 @@ fn coplanar_face_boundaries_and_sharp_dihedrals() {
         &[],
     );
     assert_eq!(
-        count(&render_mesh_svg(&gentle, &RenderOptions::default()), "<line "),
+        count(
+            &render_mesh_svg(&gentle, &RenderOptions::default()),
+            "<line "
+        ),
         4
     );
 
@@ -497,7 +514,8 @@ fn feature_edges_survive_bsp_splitting() {
                     attr(chunk, ya).parse::<f64>().unwrap(),
                 );
                 assert!(
-                    pts.iter().any(|q| (q.0 - p.0).abs() < 0.11 && (q.1 - p.1).abs() < 0.11),
+                    pts.iter()
+                        .any(|q| (q.0 - p.0).abs() < 0.11 && (q.1 - p.1).abs() < 0.11),
                     "edge endpoint {p:?} is not a vertex of {pts:?}"
                 );
             }
@@ -591,7 +609,10 @@ fn auto_order_falls_back_to_depth_sort_on_big_meshes() {
     let elapsed = start.elapsed();
     // Depth sort: one polygon per triangle, nothing split.
     assert_eq!(count(&svg, "<polygon "), 12800);
-    assert!(elapsed.as_secs() < 20, "auto fallback too slow: {elapsed:?}");
+    assert!(
+        elapsed.as_secs() < 20,
+        "auto fallback too slow: {elapsed:?}"
+    );
 
     let d = paint_order_depths(
         &m,
@@ -675,4 +696,3 @@ fn output_renders_with_resvg() {
     // The title text must have been escaped, or resvg would have choked above.
     assert!(doc.contains("cube &amp; &lt;friends&gt;"));
 }
-

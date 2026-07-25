@@ -73,11 +73,7 @@ impl Default for RenderOptions {
 /// scene), so larger z means farther away.
 pub fn view_matrix(elev_deg: f64, azim_deg: f64) -> [P3; 3] {
     let (e, a) = (elev_deg.to_radians(), azim_deg.to_radians());
-    let fwd = [
-        -(e.cos() * a.cos()),
-        -(e.cos() * a.sin()),
-        -e.sin(),
-    ];
+    let fwd = [-(e.cos() * a.cos()), -(e.cos() * a.sin()), -e.sin()];
     let mut right = cross(fwd, [0.0, 0.0, 1.0]);
     if norm(right) < 1e-9 {
         right = [1.0, 0.0, 0.0];
@@ -152,9 +148,14 @@ fn split_poly(poly: &Poly, pn: P3, pd: f64, eps: f64) -> (Option<Poly>, Option<P
         let edges = poly
             .edges
             .iter()
-            .filter_map(|&(a, b)| match (vmap.get(a).copied().flatten(), vmap.get(b).copied().flatten()) {
-                (Some(a2), Some(b2)) => Some((a2, b2)),
-                _ => None,
+            .filter_map(|&(a, b)| {
+                match (
+                    vmap.get(a).copied().flatten(),
+                    vmap.get(b).copied().flatten(),
+                ) {
+                    (Some(a2), Some(b2)) => Some((a2, b2)),
+                    _ => None,
+                }
             })
             .collect();
         Some(Poly {
@@ -299,11 +300,7 @@ fn feature_edges(mesh: &Mesh) -> Vec<Vec<(usize, usize)>> {
     let normals: Vec<P3> = t
         .iter()
         .map(|tri| {
-            let (a, b, c) = (
-                v[tri[0] as usize],
-                v[tri[1] as usize],
-                v[tri[2] as usize],
-            );
+            let (a, b, c) = (v[tri[0] as usize], v[tri[1] as usize], v[tri[2] as usize]);
             let n = cross(sub(b, a), sub(c, a));
             let l = norm(n).max(1e-30);
             [n[0] / l, n[1] / l, n[2] / l]
@@ -601,13 +598,8 @@ pub fn render_mesh_svg(mesh: &Mesh, opts: &RenderOptions) -> String {
         } else {
             [-p.normal[0], -p.normal[1], -p.normal[2]]
         };
-        let shade =
-            0.30 + 0.55 * (-dot(nl, key)).max(0.0) + 0.15 * (-dot(nl, fill)).max(0.0);
-        let mut rgb = [
-            p.color[0] * shade,
-            p.color[1] * shade,
-            p.color[2] * shade,
-        ];
+        let shade = 0.30 + 0.55 * (-dot(nl, key)).max(0.0) + 0.15 * (-dot(nl, fill)).max(0.0);
+        let mut rgb = [p.color[0] * shade, p.color[1] * shade, p.color[2] * shade];
         if !facing {
             for k in 0..3 {
                 rgb[k] = rgb[k] * 0.55 + INTERIOR_TINT[k] * 0.45;

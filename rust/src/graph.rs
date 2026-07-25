@@ -143,7 +143,9 @@ impl Graph {
         let mut hi = [f64::NEG_INFINITY; 3];
         let mut count = 0;
         for id in &self.order {
-            let Some(n) = self.nodes.get(id) else { continue };
+            let Some(n) = self.nodes.get(id) else {
+                continue;
+            };
             for key in ["pvec", "centre"] {
                 if let Some(p) = n.vec3(key) {
                     count += 1;
@@ -157,7 +159,8 @@ impl Graph {
         if count < 2 {
             return 1.0;
         }
-        let d = ((hi[0] - lo[0]).powi(2) + (hi[1] - lo[1]).powi(2) + (hi[2] - lo[2]).powi(2)).sqrt();
+        let d =
+            ((hi[0] - lo[0]).powi(2) + (hi[1] - lo[1]).powi(2) + (hi[2] - lo[2]).powi(2)).sqrt();
         if d > 0.0 {
             d
         } else {

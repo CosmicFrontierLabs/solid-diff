@@ -104,14 +104,8 @@ pub trait Surface: Send + Sync {
     /// Unit parametric normal, by central differences unless overridden.
     fn normal(&self, uv: P2) -> P3 {
         let h = 1e-6;
-        let du = sub(
-            self.eval([uv[0] + h, uv[1]]),
-            self.eval([uv[0] - h, uv[1]]),
-        );
-        let dv = sub(
-            self.eval([uv[0], uv[1] + h]),
-            self.eval([uv[0], uv[1] - h]),
-        );
+        let du = sub(self.eval([uv[0] + h, uv[1]]), self.eval([uv[0] - h, uv[1]]));
+        let dv = sub(self.eval([uv[0], uv[1] + h]), self.eval([uv[0], uv[1] - h]));
         unit(cross(du, dv))
     }
 }

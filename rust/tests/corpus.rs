@@ -25,7 +25,10 @@ use solid_diff::{container, sections, xt};
 const GOLDEN: &str = include_str!("data/golden.txt");
 
 fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf()
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .to_path_buf()
 }
 
 fn corpus() -> Vec<PathBuf> {
@@ -266,7 +269,10 @@ fn legacy_ole2_files_are_rejected() {
         let Some(data) = read_part(f) else { continue };
         assert!(!container::is_modern_swx(&data), "{f}");
         assert!(
-            matches!(container::parse(&data), Err(solid_diff::Error::NotModernSldprt)),
+            matches!(
+                container::parse(&data),
+                Err(solid_diff::Error::NotModernSldprt)
+            ),
             "{f}"
         );
     }
@@ -274,8 +280,10 @@ fn legacy_ole2_files_are_rejected() {
 
 #[test]
 fn arm_base_partition_topology() {
-    let Some(nodes) = nodes_of("samples/3_DOF_ARM_BASE.SLDPRT", "Contents/Config-0-Partition")
-    else {
+    let Some(nodes) = nodes_of(
+        "samples/3_DOF_ARM_BASE.SLDPRT",
+        "Contents/Config-0-Partition",
+    ) else {
         return;
     };
     assert_eq!(nodes.len(), 134);
@@ -305,8 +313,8 @@ fn arm_base_partition_topology() {
     assert_eq!(cyl.ptr("owner"), Some(35));
     assert_eq!(cyl.ptr("next"), Some(36));
     assert_eq!(cyl.ptr("previous"), None); // XT null pointer
-    // Note: `Node::field` only filters `Value::Null`, so a null *pointer*
-    // still comes back as `Some(Ptr(None))`.
+                                           // Note: `Node::field` only filters `Value::Null`, so a null *pointer*
+                                           // still comes back as `Some(Ptr(None))`.
     assert_eq!(cyl.field("attributes_features"), Some(&Value::Ptr(None)));
     assert_eq!(cyl.ptr("attributes_features"), None);
 
@@ -355,8 +363,10 @@ fn vault_local_bodies_surfaces() {
 
 #[test]
 fn variable_length_nodes_and_arrays() {
-    let Some(nodes) = nodes_of("samples/bbox-precision.SLDPRT", "Contents/Config-0-Partition")
-    else {
+    let Some(nodes) = nodes_of(
+        "samples/bbox-precision.SLDPRT",
+        "Contents/Config-0-Partition",
+    ) else {
         return;
     };
     assert_eq!(nodes.len(), 540);
@@ -407,7 +417,10 @@ fn variable_length_nodes_and_arrays() {
     assert_eq!(chart.i64("chart_count"), Some(25));
     let hvec = chart.f64_vec("hvec").unwrap();
     assert_eq!(hvec.len(), 75);
-    assert_eq!(&hvec[..3], &[-0.01838903930593006, 0.054, 0.06728998362774519]);
+    assert_eq!(
+        &hvec[..3],
+        &[-0.01838903930593006, 0.054, 0.06728998362774519]
+    );
     // `parameter_error` is a 2-element f64 array of XT nulls.
     match chart.fields.iter().find(|(n, _)| n == "parameter_error") {
         Some((_, Value::Array(items))) => {
@@ -432,8 +445,10 @@ fn variable_length_nodes_and_arrays() {
 /// binary `PS` payload; the decoder must skip it.
 #[test]
 fn ascii_parasolid_banner_is_skipped() {
-    let Some(nodes) = nodes_of("samples/3_DOF_ARM_BASE.SLDPRT", "Contents/Config-0-Partition")
-    else {
+    let Some(nodes) = nodes_of(
+        "samples/3_DOF_ARM_BASE.SLDPRT",
+        "Contents/Config-0-Partition",
+    ) else {
         return;
     };
     let data = read_part("samples/3_DOF_ARM_BASE.SLDPRT").unwrap();
@@ -535,6 +550,11 @@ fn matches_python_pipeline() {
         "{} lines differ from the Python pipeline ({checked} files checked, {skipped} \
          missing from disk):\n{}",
         diffs.len(),
-        diffs.iter().take(20).cloned().collect::<Vec<_>>().join("\n")
+        diffs
+            .iter()
+            .take(20)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n")
     );
 }

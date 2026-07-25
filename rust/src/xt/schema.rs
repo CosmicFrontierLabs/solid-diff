@@ -178,7 +178,8 @@ struct Cursor<'a> {
 
 impl<'a> Cursor<'a> {
     fn lit(&mut self, needle: &[u8]) -> bool {
-        if self.s.len() >= self.pos + needle.len() && &self.s[self.pos..self.pos + needle.len()] == needle
+        if self.s.len() >= self.pos + needle.len()
+            && &self.s[self.pos..self.pos + needle.len()] == needle
         {
             self.pos += needle.len();
             true

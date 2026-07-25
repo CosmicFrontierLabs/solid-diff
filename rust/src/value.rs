@@ -185,6 +185,8 @@ impl Node {
 
     /// XT `sense` field: `true` for '+', `false` for '-'. Absent means '+'.
     pub fn sense_positive(&self) -> bool {
-        self.str("sense").map(|s| !s.starts_with('-')).unwrap_or(true)
+        self.str("sense")
+            .map(|s| !s.starts_with('-'))
+            .unwrap_or(true)
     }
 }

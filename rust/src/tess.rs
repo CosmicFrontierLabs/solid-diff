@@ -12,6 +12,11 @@
 //!
 //! See `docs/FORMAT.md` §5.
 
+// Index-based loops are deliberate throughout the numeric code below: the
+// indices carry meaning (u/v dimension, matrix row/column) and reading them
+// as such is clearer than iterator gymnastics.
+#![allow(clippy::needless_range_loop)]
+
 use std::collections::HashMap;
 
 use spade::{DelaunayTriangulation, HasPosition, Point2, Triangulation};
@@ -348,14 +353,8 @@ impl LoopClassifier {
             // parity errors (the classic point-in-polygon corner case).
             clf.anchors = vec![
                 base,
-                [
-                    base[0] + 0.917 * scale[0],
-                    base[1] - 1.313 * scale[1],
-                ],
-                [
-                    base[0] - 1.531 * scale[0],
-                    base[1] - 0.717 * scale[1],
-                ],
+                [base[0] + 0.917 * scale[0], base[1] - 1.313 * scale[1]],
+                [base[0] - 1.531 * scale[0], base[1] - 0.717 * scale[1]],
             ];
             clf.anchor_inside = false;
             return clf;
@@ -446,7 +445,8 @@ impl LoopClassifier {
             let qp = [s[0][0] - q0[0], s[0][1] - q0[1]];
             let t = (qp[0] * sd[1] - qp[1] * sd[0]) / denom;
             let u = (qp[0] * r[1] - qp[1] * r[0]) / denom;
-            if t > 0.0 && t < 1.0 && u >= 0.0 && u < 1.0 {
+            // Half-open in u so a ray through a shared vertex counts once.
+            if t > 0.0 && t < 1.0 && (0.0..1.0).contains(&u) {
                 hits += 1;
             }
         }
@@ -594,14 +594,8 @@ fn jacobi_eigen_3x3(mut a: [[f64; 3]; 3]) -> ([P3; 3], [f64; 3]) {
 
 fn metric_scale(surf: &dyn Surface, uv: P2) -> P2 {
     let h = 1e-5;
-    let du = dist(
-        surf.eval([uv[0] + h, uv[1]]),
-        surf.eval([uv[0] - h, uv[1]]),
-    ) / (2.0 * h);
-    let dv = dist(
-        surf.eval([uv[0], uv[1] + h]),
-        surf.eval([uv[0], uv[1] - h]),
-    ) / (2.0 * h);
+    let du = dist(surf.eval([uv[0] + h, uv[1]]), surf.eval([uv[0] - h, uv[1]])) / (2.0 * h);
+    let dv = dist(surf.eval([uv[0], uv[1] + h]), surf.eval([uv[0], uv[1] - h])) / (2.0 * h);
     [du.max(1e-12), dv.max(1e-12)]
 }
 
@@ -743,7 +737,10 @@ fn tessellate_face(
         None => {
             if loops3d.is_empty() {
                 if !dry_run {
-                    warns.push(format!("face #{}: no surface and no loops; skipped", face.id));
+                    warns.push(format!(
+                        "face #{}: no surface and no loops; skipped",
+                        face.id
+                    ));
                 }
                 return None;
             }
@@ -791,10 +788,15 @@ fn tessellate_face(
             }
         }
     }
-    if loops_uv.is_empty() && !(surf.period_u().is_some() && surf.period_v().is_some()) && !used_shim
+    if loops_uv.is_empty()
+        && !(surf.period_u().is_some() && surf.period_v().is_some())
+        && !used_shim
     {
         if !dry_run {
-            warns.push(format!("face #{}: open surface with no loops; skipped", face.id));
+            warns.push(format!(
+                "face #{}: open surface with no loops; skipped",
+                face.id
+            ));
         }
         return None;
     }
@@ -825,7 +827,12 @@ fn tessellate_face(
     // Doubly-periodic surfaces (torus) have no such point.
     let mut outside: Option<P2> = None;
     if !loops_uv.is_empty() {
-        let (mut umin, mut umax, mut vmin, mut vmax) = (f64::INFINITY, f64::NEG_INFINITY, f64::INFINITY, f64::NEG_INFINITY);
+        let (mut umin, mut umax, mut vmin, mut vmax) = (
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+        );
         let (mut usum, mut vsum, mut cnt) = (0.0, 0.0, 0.0);
         for lp in &loops_uv {
             for p in lp {
@@ -841,8 +848,7 @@ fn tessellate_face(
         let _ = umax;
         // If the domain was extended to a natural bound, "beyond the loops in
         // v" is outside the parameter domain, not outside the face.
-        let pole_extended =
-            surf.v_bounds().is_some() && (vmax - vmin) < 0.5 * (hi[1] - lo[1]);
+        let pole_extended = surf.v_bounds().is_some() && (vmax - vmin) < 0.5 * (hi[1] - lo[1]);
         // Irrational-ish offsets keep the ray off grid and seam lines, where
         // exact crossings make parity fragile.
         if surf.period_v().is_none() && !pole_extended {
@@ -947,7 +953,10 @@ fn tessellate_face(
             ));
             return None;
         }
-        warns.push(format!("face #{}: parity anchor flipped (thin face?)", face.id));
+        warns.push(format!(
+            "face #{}: parity anchor flipped (thin face?)",
+            face.id
+        ));
     }
 
     let verts3d: Vec<P3> = all_uv
@@ -973,10 +982,7 @@ fn tessellate_face(
         sub(verts3d[t[1]], verts3d[t[0]]),
         sub(verts3d[t[2]], verts3d[t[0]]),
     );
-    let n_out = vscale(
-        surf.normal(centroid(&t)),
-        surf.sense_sign() * face_sign,
-    );
+    let n_out = vscale(surf.normal(centroid(&t)), surf.sense_sign() * face_sign);
     if dot(n_geo, n_out) < 0.0 {
         for t in tris.iter_mut() {
             t.swap(1, 2);
@@ -1006,7 +1012,8 @@ pub fn tessellate(graph: &Graph, tol: Option<f64>) -> Mesh {
 
     // pass 2: tessellate for real
     for face in &faces {
-        let Some((v3, tris)) = tessellate_face(graph, face, &mut sampler, tol, &mut mesh.warnings, false)
+        let Some((v3, tris)) =
+            tessellate_face(graph, face, &mut sampler, tol, &mut mesh.warnings, false)
         else {
             continue;
         };
@@ -1051,7 +1058,7 @@ mod tests {
                 [t.cos() * 2.0, t.sin() * 3.0, 0.0]
             })
             .collect();
-        let shim = PlaneShim::new(&[pts.clone()]);
+        let shim = PlaneShim::new(std::slice::from_ref(&pts));
         assert!(shim.n[2].abs() > 0.999, "normal was {:?}", shim.n);
         // round-trip a point through the plane parameterization
         let p = pts[3];

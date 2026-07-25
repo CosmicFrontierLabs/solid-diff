@@ -29,7 +29,10 @@ impl<'a> Reader<'a> {
     }
 
     fn take(&mut self, n: usize) -> Result<&'a [u8], XtError> {
-        let end = self.pos.checked_add(n).ok_or_else(|| XtError("overflow".into()))?;
+        let end = self
+            .pos
+            .checked_add(n)
+            .ok_or_else(|| XtError("overflow".into()))?;
         if end > self.data.len() {
             return Err(XtError(format!(
                 "unexpected end of transmit: want {n} bytes at offset {}, {} left",
@@ -106,7 +109,10 @@ impl<'a> Reader<'a> {
     /// `n` UTF-16 big-endian code units.
     pub fn utf16_be(&mut self, n: usize) -> Result<String, XtError> {
         let b = self.take(n * 2)?;
-        let units: Vec<u16> = b.chunks_exact(2).map(|c| u16::from_be_bytes([c[0], c[1]])).collect();
+        let units: Vec<u16> = b
+            .chunks_exact(2)
+            .map(|c| u16::from_be_bytes([c[0], c[1]]))
+            .collect();
         String::from_utf16(&units).map_err(|e| XtError(format!("bad utf-16: {e}")))
     }
 

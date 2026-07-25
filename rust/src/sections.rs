@@ -52,7 +52,10 @@ fn inflate_zlib_prefix(input: &[u8]) -> Option<(Vec<u8>, usize)> {
 
 /// Inflate every zlib stream found in `data`, in offset order.
 pub fn carve_zlib(data: &[u8]) -> Vec<Vec<u8>> {
-    carve_zlib_offsets(data).into_iter().map(|(_, b)| b).collect()
+    carve_zlib_offsets(data)
+        .into_iter()
+        .map(|(_, b)| b)
+        .collect()
 }
 
 /// Like [`carve_zlib`], but also reports each block's byte offset in `data`.
@@ -180,18 +183,28 @@ mod tests {
             v
         };
         assert_eq!(
-            transmit_kind(&mk(": TRANSMIT FILE (partition) created by modeller version 2900085")),
+            transmit_kind(&mk(
+                ": TRANSMIT FILE (partition) created by modeller version 2900085"
+            )),
             Some(TransmitKind::Partition)
         );
         assert_eq!(
-            transmit_kind(&mk(": TRANSMIT FILE (deltas) created by modeller version 2900085")),
+            transmit_kind(&mk(
+                ": TRANSMIT FILE (deltas) created by modeller version 2900085"
+            )),
             Some(TransmitKind::Deltas)
         );
         assert_eq!(
             transmit_kind(&mk(": TRANSMIT FILE created by modeller version 2900085")),
             Some(TransmitKind::Part)
         );
-        assert_eq!(transmit_kind(&mk(": SCHEMA FILE created by modeller version 1")), None);
-        assert_eq!(transmit_kind(b"XX: TRANSMIT FILE created by modeller version 1"), None);
+        assert_eq!(
+            transmit_kind(&mk(": SCHEMA FILE created by modeller version 1")),
+            None
+        );
+        assert_eq!(
+            transmit_kind(b"XX: TRANSMIT FILE created by modeller version 1"),
+            None
+        );
     }
 }
