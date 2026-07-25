@@ -1,0 +1,22 @@
+[package]
+name = "solid-diff"
+version = "0.1.0"
+edition = "2021"
+description = "Read SolidWorks part files (SLDPRT), extract Parasolid B-rep, tessellate and render"
+license = "MIT"
+
+[dependencies]
+flate2 = "1"
+spade = "2"
+clap = { version = "4", features = ["derive"] }
+
+[profile.release]
+opt-level = 3
+
+[lib]
+name = "solid_diff"
+path = "src/lib.rs"
+
+[[bin]]
+name = "solid-diff"
+path = "src/bin/solid_diff.rs"
