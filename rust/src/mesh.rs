@@ -104,3 +104,29 @@ impl Mesh {
         Ok(())
     }
 }
+
+impl Mesh {
+    /// Total triangle area. Orientation-independent, so it compares meshes
+    /// fairly even when one of them is open.
+    pub fn surface_area(&self) -> f64 {
+        let mut a = 0.0;
+        for t in &self.triangles {
+            let (p, q, r) = (
+                self.vertices[t[0] as usize],
+                self.vertices[t[1] as usize],
+                self.vertices[t[2] as usize],
+            );
+            a += 0.5 * norm(cross(sub(q, p), sub(r, p)));
+        }
+        a
+    }
+
+    /// Bounding-box diagonal length.
+    pub fn bbox_diagonal(&self) -> f64 {
+        let (lo, hi) = self.bounds();
+        if !lo[0].is_finite() {
+            return 0.0;
+        }
+        norm(sub(hi, lo))
+    }
+}

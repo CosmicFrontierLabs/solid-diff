@@ -99,7 +99,9 @@ impl FieldDef {
                 FieldType::Char => Value::Char(r.char(n)?),
                 FieldType::Utf16 => Value::Utf16(r.utf16_be(n)?),
                 _ => {
-                    let mut items = Vec::with_capacity(n);
+                    // Cap the pre-allocation: a corrupt count must not turn
+                    // into a huge allocation (every element costs >= 1 byte).
+                    let mut items = Vec::with_capacity(n.min(r.remaining()));
                     for _ in 0..n {
                         items.push(self.read_one(r)?);
                     }

@@ -97,7 +97,9 @@ fn apply(m: &[P3; 3], v: P3) -> P3 {
 struct Poly {
     /// Camera-space points.
     pts: Vec<P3>,
-    /// Unit normal (camera space).
+    /// Unit normal from the camera-space cross product. The camera basis is
+    /// left-handed, so this is the *negated* rotated world normal: it points
+    /// towards the eye when `normal[2] > 0`.
     normal: P3,
     /// Base rgb.
     color: [f64; 3],
@@ -563,6 +565,7 @@ pub fn render_mesh_svg(mesh: &Mesh, opts: &RenderOptions) -> String {
     };
 
     // ── lights (camera space) ──
+    let m = view_matrix(opts.elev, opts.azim);
     let key = apply(&m, unit(KEY_LIGHT));
     let fill = apply(&m, unit(FILL_LIGHT));
 
@@ -580,7 +583,19 @@ pub fn render_mesh_svg(mesh: &Mesh, opts: &RenderOptions) -> String {
         );
     }
     for p in &ordered {
-        let facing = p.normal[2] < 0.0;
+        // `normal` is a cross product taken in camera space, and the camera
+        // basis is left-handed (right x up == -fwd, det == -1), so it is the
+        // *negated* rotated world normal. A face pointing at the eye therefore
+        // has normal[2] > 0 here.
+        //
+        // NOTE: render.py tests `normal[2] < 0`, which flags the faces that
+        // point away from the eye as front faces — it shades the far shell and
+        // puts the interior tint on the near one. That inversion cancels
+        // against its inverted paint order (see traverse_bsp), so its images
+        // look plausible; both are corrected here. The shading expression below
+        // is unchanged: with nl oriented towards the eye in this left-handed
+        // frame, `-nl·key` is exactly the diffuse term `n_world·key_world`.
+        let facing = p.normal[2] > 0.0;
         let nl = if facing {
             p.normal
         } else {

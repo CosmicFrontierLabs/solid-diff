@@ -270,9 +270,11 @@ fn cmd_mesh(
     );
     if stats {
         println!(
-            "  boundary edges: {}  signed volume: {:+.6e}",
+            "  boundary edges: {}  signed volume: {:+.6e}  area: {:.6e}  diag: {:.6e}",
             mesh.boundary_edge_count(),
-            mesh.signed_volume()
+            mesh.signed_volume(),
+            mesh.surface_area(),
+            mesh.bbox_diagonal()
         );
     }
     if !quiet {

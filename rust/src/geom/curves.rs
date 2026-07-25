@@ -63,10 +63,7 @@ impl Curve for Circle {
     fn eval(&self, t: f64) -> P3 {
         add(
             self.c,
-            scale(
-                add(scale(self.x, t.cos()), scale(self.y, t.sin())),
-                self.r,
-            ),
+            scale(add(scale(self.x, t.cos()), scale(self.y, t.sin())), self.r),
         )
     }
     fn inv(&self, p: P3) -> f64 {
@@ -185,7 +182,7 @@ pub(crate) fn expand_knots(knots: &[f64], mult: &[i64]) -> Option<Vec<f64>> {
     }
     let mut out = Vec::new();
     for (&kv, &m) in knots.iter().zip(mult) {
-        if m < 0 || m > 1_000_000 {
+        if !(0..=1_000_000).contains(&m) {
             return None;
         }
         for _ in 0..m {
@@ -363,7 +360,11 @@ impl Polyline {
 impl Curve for Polyline {
     fn eval(&self, t: f64) -> P3 {
         let last = *self.s.last().unwrap();
-        let t = if t.is_finite() { t.clamp(0.0, last) } else { 0.0 };
+        let t = if t.is_finite() {
+            t.clamp(0.0, last)
+        } else {
+            0.0
+        };
         let i = self
             .s
             .partition_point(|&x| x <= t)

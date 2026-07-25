@@ -51,7 +51,9 @@ pub struct EdgeSampler {
     tol: f64,
     ranges: HashMap<NodeId, Option<EdgeRange>>,
     spacing: HashMap<NodeId, f64>,
-    cache: HashMap<NodeId, Vec<P3>>,
+    /// Keyed by (edge, requested spacing): pass 1 samples at the default
+    /// spacing, pass 2 at the negotiated one, and the two must not collide.
+    cache: HashMap<(NodeId, u64), Vec<P3>>,
 }
 
 fn vertex_point(graph: &Graph, node: &Node, field: &str) -> Option<P3> {
@@ -139,13 +141,14 @@ impl EdgeSampler {
 
     /// Ordered 3D samples along an edge, from its '+' halfedge's start vertex.
     pub fn get(&mut self, graph: &Graph, edge: &Node) -> Option<Vec<P3>> {
-        if let Some(cached) = self.cache.get(&edge.id) {
+        let spacing = *self.spacing.get(&edge.id).unwrap_or(&f64::INFINITY);
+        let key = (edge.id, spacing.to_bits());
+        if let Some(cached) = self.cache.get(&key) {
             return Some(cached.clone());
         }
         if !self.range_for(graph, edge) {
             return None;
         }
-        let spacing = *self.spacing.get(&edge.id).unwrap_or(&f64::INFINITY);
         let tol = self.tol;
         let pts = match self.ranges.get(&edge.id).and_then(|o| o.as_ref())? {
             EdgeRange::Line(a, b) => {
@@ -208,7 +211,7 @@ impl EdgeSampler {
                 pts
             }
         };
-        self.cache.insert(edge.id, pts.clone());
+        self.cache.insert(key, pts.clone());
         Some(pts)
     }
 }

@@ -63,10 +63,7 @@ impl Plane {
 
 impl Surface for Plane {
     fn eval(&self, uv: P2) -> P3 {
-        add(
-            self.p0,
-            add(scale(self.x, uv[0]), scale(self.y, uv[1])),
-        )
+        add(self.p0, add(scale(self.x, uv[0]), scale(self.y, uv[1])))
     }
     fn inv(&self, p: P3) -> P2 {
         let q = sub(p, self.p0);
@@ -739,23 +736,17 @@ impl Surface for NurbsSurf {
         for _ in 0..25 {
             let r = sub(self.eval(uv), p);
             let du = scale(
-                sub(
-                    self.eval([uv[0] + h, uv[1]]),
-                    self.eval([uv[0] - h, uv[1]]),
-                ),
+                sub(self.eval([uv[0] + h, uv[1]]), self.eval([uv[0] - h, uv[1]])),
                 0.5 / h,
             );
             let dv = scale(
-                sub(
-                    self.eval([uv[0], uv[1] + h]),
-                    self.eval([uv[0], uv[1] - h]),
-                ),
+                sub(self.eval([uv[0], uv[1] + h]), self.eval([uv[0], uv[1] - h])),
                 0.5 / h,
             );
             // Normal equations for the 2x2 Gauss-Newton step.
             let (a, b, c) = (dot(du, du), dot(du, dv), dot(dv, dv));
             let det = a * c - b * b;
-            if !(det > 1e-30) {
+            if det <= 1e-30 || !det.is_finite() {
                 break;
             }
             let (r1, r2) = (dot(du, r), dot(dv, r));
@@ -799,7 +790,15 @@ pub struct BlendedEdge {
 
 impl BlendedEdge {
     fn from_node(graph: &Graph, node: &Node) -> Option<Self> {
-        let r = *node.f64_vec("range")?.first()?;
+        // `range` is [start_radius, end_radius]. One corpus part
+        // (bbox-precision.SLDPRT, node 148) stores [-0.01, 0.01]: the sign
+        // encodes convexity, not a side flip — using it verbatim (as geom.py
+        // does) mirrors the fillet to the wrong side of the spine, 2r away
+        // from both supports. Take the magnitude.
+        let r = node.f64_vec("range")?.first()?.abs();
+        if r <= 0.0 || !r.is_finite() {
+            return None;
+        }
         let spine = make_curve(graph, graph.deref(node, "spine")?)?;
         let ids = node.ptrs("surface");
         if ids.len() != 2 {
