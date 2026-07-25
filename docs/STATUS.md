@@ -52,13 +52,21 @@ name is hardcoded (streams are ranked by face count).
 | files where both produce a mesh | 33 / 33 parseable (3 are OLE2, both reject) |
 | XT decode | **bit-identical**: 32,473 nodes, all fields hash-equal |
 | geometry evaluation | ≤ 4.3e-10 m over 2157 real evaluations |
-| surface area within 2% | 28 / 33 |
+| extracted `.x_b` transmits | byte-identical |
+| surface area within 2% | 27 / 33 (worst remaining difference 4.8%) |
 | triangle count within 25% | 33 / 33 |
-| open edges (corpus total) | Python 12,987 · Rust 13,348 |
-| speed | median **5.2× faster**, up to 97× on NURBS-heavy parts |
+| open edges (corpus total) | Python 12,987 · **Rust 12,711** |
+| speed | median **6× faster**, up to 98× on NURBS-heavy parts |
 
-The Rust renderer additionally **fixes two bugs** in the Python one (see
-below), so its output is more correct, not merely equivalent.
+Rust is not merely equivalent: it produces **fewer open edges** than Python
+across the corpus, and its renderer **fixes two bugs** in the Python one
+(see #8). Surface area is the headline comparison because it ignores
+orientation and so stays meaningful on open meshes; signed volume does not.
+
+Where the two still differ by a few percent (`template`, the screw-mount
+nut, the socket-head screw, `13_570115-99`, `15_M83513_01-FN_PART7`,
+`17_NONE-42.step`), neither is verified correct — settling it needs a
+ground-truth mesh from a real kernel.
 
 ## Open work
 
@@ -70,11 +78,12 @@ All tracked as GitHub issues. Summary of what is left, worst first:
   `CVS-22055[TAM]_03202026__00000914_v2` drove the Python sweep to 37.8 GB
   and was OOM-killed — the only file of 1536 we cannot read.
   `tools/census.py` now isolates each file, but the blow-up is unfixed.
-- **[#5] Torus faces rely on a heuristic anchor.** No point in a
-  doubly-periodic domain is provably outside the face, so the parity
-  classifier guesses via the material-left convention. Now the largest
-  source of Rust/Python divergence (`05_90611A500_Screw-Mount_Nut`: 13.6%
-  area difference, 970 vs 100 open edges). TORUS is 2.6% of all faces.
+- **[#5] Faces winding in both parameter directions still guess.** Mostly
+  fixed: a periodic direction the loops do not cover has a provably-outside
+  anchor in the gap, which took corpus open edges from 13,348 to 12,711 and
+  the worst part (the screw-mount nut) from 970 open edges to 263. Only
+  faces that wind in *both* directions still fall back to the material-left
+  heuristic.
 - **[#2] `SPUN_SURF` is dead code in Python** — `geom.py` reads
   `section`/`pvec` but the schema defines `profile`/`base`/`axis`/`x_axis`,
   so it always falls back to a plane. 55 faces / 15 files.
