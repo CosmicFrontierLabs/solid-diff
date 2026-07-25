@@ -17,8 +17,7 @@ use std::collections::HashMap;
 use spade::{DelaunayTriangulation, HasPosition, Point2, Triangulation};
 
 use crate::geom::{
-    cross, dist, dot, make_curve, make_surface, norm, scale as vscale, sub, unit, Curve, Surface,
-    P2, P3,
+    cross, dist, dot, make_curve, make_surface, scale as vscale, sub, unit, Curve, Surface, P2, P3,
 };
 use crate::graph::Graph;
 use crate::mesh::Mesh;
@@ -648,16 +647,6 @@ fn grid_step(surf: &dyn Surface, lo: P2, hi: P2, tol: f64) -> P2 {
     steps
 }
 
-fn signed_area(poly: &[P2]) -> f64 {
-    let n = poly.len();
-    let mut s = 0.0;
-    for i in 0..n {
-        let j = (i + 1) % n;
-        s += poly[i][0] * poly[j][1] - poly[j][0] * poly[i][1];
-    }
-    s / 2.0
-}
-
 /// Make a periodic coordinate continuous along a polyline.
 fn unwrap_loop(uv: &mut [P2], period_u: Option<f64>, period_v: Option<f64>) {
     for (dim, period) in [(0usize, period_u), (1usize, period_v)] {
@@ -1068,15 +1057,6 @@ mod tests {
         let p = pts[3];
         let back = shim.eval(shim.inv(p));
         assert!(dist(p, back) < 1e-9);
-    }
-
-    #[test]
-    fn signed_area_sign_and_magnitude() {
-        let ccw = vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
-        assert!((signed_area(&ccw) - 1.0).abs() < 1e-12);
-        let mut cw = ccw.clone();
-        cw.reverse();
-        assert!((signed_area(&cw) + 1.0).abs() < 1e-12);
     }
 
     #[test]
