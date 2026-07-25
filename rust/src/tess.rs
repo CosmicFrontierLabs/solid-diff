@@ -112,9 +112,22 @@ impl EdgeSampler {
                         let t0 = curve.inv(a);
                         let mut t1 = curve.inv(b);
                         if let Some(p) = curve.period() {
-                            if t1 <= t0 + 1e-12 {
-                                t1 += p;
-                            }
+                            // Two arcs join these endpoints and nothing stored
+                            // on the edge says which: XT keeps no direction
+                            // flag, and the '+' halfedge's vertices are
+                            // consistent with both. Take the shorter one --
+                            // kernels split long spans, and the alternative
+                            // (always going forwards) sampled the 300 deg
+                            // complement of every 60 deg hex-socket arc on the
+                            // ISO 14583 screws, winding the boundary five
+                            // times around the axis.
+                            let fwd = if t1 >= t0 { t1 } else { t1 + p };
+                            let back = if t1 <= t0 { t1 } else { t1 - p };
+                            t1 = if (fwd - t0).abs() <= (t0 - back).abs() {
+                                fwd
+                            } else {
+                                back
+                            };
                         }
                         if (t1 - t0).abs() < 1e-14 {
                             t1 = t0 + curve.period().unwrap_or(0.0);
@@ -463,8 +476,32 @@ impl LoopClassifier {
             }
         }
         // replicate across periods so a ray leaving the window still counts
+        // Replication exists so a ray leaving the period window still meets
+        // the boundary where it wraps. It is only safe while the loops stay
+        // inside one period: a face that spans several (a thread winding many
+        // turns) would have each copy land on top of a neighbouring turn,
+        // injecting phantom segments right where real ones are and corrupting
+        // the parity count.
+        let span = |dim: usize| -> f64 {
+            let mut lo = f64::INFINITY;
+            let mut hi = f64::NEG_INFINITY;
+            for s in &segs {
+                for p in s {
+                    lo = lo.min(p[dim]);
+                    hi = hi.max(p[dim]);
+                }
+            }
+            if lo.is_finite() {
+                hi - lo
+            } else {
+                0.0
+            }
+        };
+        let rep_u = period_u.filter(|p| span(0) < *p * 1.001);
+        let rep_v = period_v.filter(|p| span(1) < *p * 1.001);
+
         let mut reps = segs.clone();
-        if let Some(p) = period_u {
+        if let Some(p) = rep_u {
             for du in [-p, p] {
                 for s in &segs {
                     reps.push([[s[0][0] + du, s[0][1]], [s[1][0] + du, s[1][1]]]);
@@ -472,7 +509,7 @@ impl LoopClassifier {
             }
         }
         let base = reps.clone();
-        if let Some(p) = period_v {
+        if let Some(p) = rep_v {
             for dv in [-p, p] {
                 for s in &base {
                     reps.push([[s[0][0], s[0][1] + dv], [s[1][0], s[1][1] + dv]]);
