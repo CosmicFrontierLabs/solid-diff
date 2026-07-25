@@ -136,35 +136,49 @@ impl Graph {
         None
     }
 
-    /// Extent of the model's stored coordinates, used to pick a default
-    /// tessellation tolerance.
+    /// Size of the actual solid, used to pick a default tessellation
+    /// tolerance.
+    ///
+    /// Measured over `POINT` nodes — the B-rep's real vertices — rather than
+    /// every surface's reference point. A surface's `pvec` is only *a* point
+    /// on (or on the axis of) an unbounded surface and can sit arbitrarily far
+    /// from the part: an ISO 14583 M2.5 screw in the corpus has a cone whose
+    /// apex is a metre away, which inflated its measured size from 3.5 mm to
+    /// 1012 mm and left the tolerance coarser than the whole screw.
     pub fn model_scale(&self) -> f64 {
-        let mut lo = [f64::INFINITY; 3];
-        let mut hi = [f64::NEG_INFINITY; 3];
-        let mut count = 0;
-        for id in &self.order {
-            let Some(n) = self.nodes.get(id) else {
-                continue;
-            };
-            for key in ["pvec", "centre"] {
-                if let Some(p) = n.vec3(key) {
-                    count += 1;
-                    for i in 0..3 {
-                        lo[i] = lo[i].min(p[i]);
-                        hi[i] = hi[i].max(p[i]);
+        for keys in [&["pvec"][..], &["pvec", "centre"][..]] {
+            // First pass: vertices only. Second: fall back to reference points
+            // for degenerate graphs that carry no POINT nodes.
+            let vertices_only = keys.len() == 1;
+            let mut lo = [f64::INFINITY; 3];
+            let mut hi = [f64::NEG_INFINITY; 3];
+            let mut count = 0;
+            for id in &self.order {
+                let Some(n) = self.nodes.get(id) else {
+                    continue;
+                };
+                if vertices_only && n.name != "POINT" {
+                    continue;
+                }
+                for key in keys {
+                    if let Some(p) = n.vec3(key) {
+                        count += 1;
+                        for i in 0..3 {
+                            lo[i] = lo[i].min(p[i]);
+                            hi[i] = hi[i].max(p[i]);
+                        }
                     }
                 }
             }
+            if count >= 2 {
+                let d =
+                    ((hi[0] - lo[0]).powi(2) + (hi[1] - lo[1]).powi(2) + (hi[2] - lo[2]).powi(2))
+                        .sqrt();
+                if d > 0.0 {
+                    return d;
+                }
+            }
         }
-        if count < 2 {
-            return 1.0;
-        }
-        let d =
-            ((hi[0] - lo[0]).powi(2) + (hi[1] - lo[1]).powi(2) + (hi[2] - lo[2]).powi(2)).sqrt();
-        if d > 0.0 {
-            d
-        } else {
-            1.0
-        }
+        1.0
     }
 }
