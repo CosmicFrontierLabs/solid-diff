@@ -26,11 +26,12 @@ Two full sweeps of the vault export: a Python structural census
 
 | outcome | files | share |
 |---|---|---|
-| **meshed successfully (Rust)** | **1506** | **98.0%** |
+| **meshed successfully (Rust)** | **1520** | **99.0%** |
 | legacy pre-2015 OLE2 container | 16 | 1.0% |
-| exceeded the 180 s sweep timeout (not broken, just slow — #14) | 7 | 0.5% |
 | carries no B-rep at all (a 1-node stub partition) | 1 | 0.1% |
-| remainder (no geometry stream) | 6 | 0.4% |
+
+Rendering all 1536 into 24 isometric contact sheets takes **118 s wall**
+(9m16s CPU, 12-way, 690 MB peak) — every part, nothing excluded.
 
 That is **26.5 million triangles** with no crash, hang or unbounded
 allocation anywhere in the run. Median part is 5,943 triangles; the largest
@@ -111,10 +112,11 @@ All tracked as GitHub issues. Summary of what is left, worst first:
   filter by centroid, so concave corners can be cut. `spade` is already a
   dependency and supports a real CDT. This is the main lever on the
   watertightness numbers above (7.6% of parts fully closed).
-- **[#14] Tessellation is quadratic in boundary size.** `LoopClassifier`
-  tests every boundary segment for every query point, so the largest parts
-  take minutes (198 s for 1.5M triangles). Wants a spatial index, and the
-  per-face loop parallelises trivially.
+- **[#14] Per-face work is not parallelised.** The two pathologies are fixed
+  (a uniform-grid index over boundary segments, and analytic NURBS
+  derivatives), which took the worst parts from *never finishing* to 22 s and
+  the full 1536-part sheet run from ~22 min to **118 s**. Faces are
+  independent, so rayon over the per-face loop is the remaining lever.
 - **[#6] Deltas transmits never parse** (extended node types absent from
   schema 13006). Harmless for meshing; blocks reading edit history.
 
