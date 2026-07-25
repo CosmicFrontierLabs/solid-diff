@@ -19,10 +19,14 @@
 
 use std::collections::HashMap;
 
-use spade::{DelaunayTriangulation, HasPosition, Point2, Triangulation};
+use spade::{
+    handles::FixedVertexHandle, ConstrainedDelaunayTriangulation, HasPosition, Point2,
+    Triangulation,
+};
 
 use crate::geom::{
-    cross, dist, dot, make_curve, make_surface, scale as vscale, sub, unit, Curve, Surface, P2, P3,
+    cross, dist, dot, make_curve, make_surface, norm, scale as vscale, sub, unit, Curve, Surface,
+    P2, P3,
 };
 use crate::graph::Graph;
 use crate::mesh::Mesh;
@@ -1175,23 +1179,69 @@ fn tessellate_face(
         );
     }
 
-    let mut tri = DelaunayTriangulation::<DelPt>::new();
+    // Constrained Delaunay: every boundary segment is forced to be a
+    // triangulation edge. That is what lets the trim below be a flood fill
+    // instead of a per-triangle point-in-polygon test, and it is why adjacent
+    // faces now agree along their shared edge.
+    let mut tri = ConstrainedDelaunayTriangulation::<DelPt>::new();
+    let mut handles: Vec<Option<FixedVertexHandle>> = Vec::with_capacity(all_uv.len());
     for (i, q) in all_uv.iter().enumerate() {
         let pos = Point2::new(q[0] / su, q[1] / sv);
         if !pos.x.is_finite() || !pos.y.is_finite() {
+            handles.push(None);
             continue;
         }
-        let _ = tri.insert(DelPt { pos, idx: i as u32 });
+        handles.push(tri.insert(DelPt { pos, idx: i as u32 }).ok());
     }
-    let mut simplices: Vec<[usize; 3]> = Vec::new();
-    for f in tri.inner_faces() {
-        let vs = f.vertices();
-        simplices.push([
-            vs[0].data().idx as usize,
-            vs[1].data().idx as usize,
-            vs[2].data().idx as usize,
-        ]);
+    // Constrain each loop's consecutive samples, including the closing edge.
+    // `try_add_constraint` resolves crossings rather than panicking, which
+    // matters because a coarsely sampled loop can self-intersect in UV.
+    let mut base = 0usize;
+    let mut constrained = 0usize;
+    for lp in &loops_uv {
+        let n = lp.len();
+        // A loop that winds the period leaves the window at one edge and
+        // re-enters at the other, so its first and last samples sit a whole
+        // period apart: closing it directly would slice across the face.
+        let closes = {
+            let (a, b) = (lp[n - 1], lp[0]);
+            let gap = ((a[0] - b[0]) / su).hypot((a[1] - b[1]) / sv);
+            let typical = (0..n.saturating_sub(1))
+                .map(|k| ((lp[k][0] - lp[k + 1][0]) / su).hypot((lp[k][1] - lp[k + 1][1]) / sv))
+                .fold(f64::INFINITY, f64::min);
+            gap <= (3.0 * typical).max(3.0)
+        };
+        for k in 0..n {
+            if k + 1 == n && !closes {
+                continue;
+            }
+            let (a, b) = (base + k, base + (k + 1) % n);
+            if let (Some(ha), Some(hb)) = (handles[a], handles[b]) {
+                if ha != hb && tri.can_add_constraint(ha, hb) {
+                    tri.add_constraint(ha, hb);
+                    constrained += 1;
+                } else if ha != hb {
+                    // Crossing an existing constraint: let spade split it.
+                    if !tri.try_add_constraint(ha, hb).is_empty() {
+                        constrained += 1;
+                    }
+                }
+            }
+        }
+        base += n;
     }
+
+    let simplices: Vec<[usize; 3]> = tri
+        .inner_faces()
+        .map(|f| {
+            let vs = f.vertices();
+            [
+                vs[0].data().idx as usize,
+                vs[1].data().idx as usize,
+                vs[2].data().idx as usize,
+            ]
+        })
+        .collect();
     if simplices.is_empty() {
         warns.push(format!("face #{}: triangulation failed; skipped", face.id));
         return None;
@@ -1203,7 +1253,78 @@ fn tessellate_face(
             (all_uv[t[0]][1] + all_uv[t[1]][1] + all_uv[t[2]][1]) / 3.0,
         ]
     };
-    let keep: Vec<bool> = simplices.iter().map(|t| clf.inside(centroid(t))).collect();
+
+    // Trim by flooding inwards from outside the hull, flipping in/out time a
+    // constraint edge is crossed. Because constraints are exactly the face
+    // boundary, this is exact for nested holes and cannot disagree between
+    // neighbouring faces the way independent per-point tests can.
+    let keep: Vec<bool> = if constrained > 0 {
+        let n_faces = tri.num_all_faces();
+        // neighbour index and whether the shared edge is a constraint
+        let mut adj: Vec<[(Option<usize>, bool); 3]> = vec![[(None, false); 3]; n_faces];
+        for f in tri.inner_faces() {
+            let mut slot = [(None, false); 3];
+            for (k, e) in f.adjacent_edges().iter().enumerate() {
+                slot[k] = (
+                    e.rev().face().as_inner().map(|nf| nf.index()),
+                    e.is_constraint_edge(),
+                );
+            }
+            adj[f.index()] = slot;
+        }
+        let mut inside = vec![false; n_faces];
+        let mut seen = vec![false; n_faces];
+        let mut queue: Vec<(usize, bool)> = Vec::new();
+        // Seed from the largest triangle: its centroid sits furthest from any
+        // boundary, so the point-in-face test is at its most reliable there.
+        // Everything else follows by parity, which keeps the whole face
+        // self-consistent rather than testing each triangle independently.
+        let mut seed = None;
+        let mut best_area = 0.0f64;
+        for (f, t) in tri.inner_faces().zip(&simplices) {
+            let (a, b, c) = (all_uv[t[0]], all_uv[t[1]], all_uv[t[2]]);
+            let area = (((b[0] - a[0]) / su) * ((c[1] - a[1]) / sv)
+                - ((b[1] - a[1]) / sv) * ((c[0] - a[0]) / su))
+                .abs();
+            if area > best_area {
+                best_area = area;
+                seed = Some((f.index(), clf.inside(centroid(t))));
+            }
+        }
+        if let Some(sd) = seed {
+            queue.push(sd);
+        }
+        while let Some((fi, ins)) = queue.pop() {
+            if seen[fi] {
+                continue;
+            }
+            seen[fi] = true;
+            inside[fi] = ins;
+            for (nb, is_c) in adj[fi] {
+                if let Some(nf) = nb {
+                    if !seen[nf] {
+                        queue.push((nf, ins ^ is_c));
+                    }
+                }
+            }
+        }
+        let flood: Vec<bool> = tri.inner_faces().map(|f| inside[f.index()]).collect();
+        // The flood fill commits the whole face on one seed classification, so
+        // a bad seed loses the face outright. A face that keeps nothing is
+        // never right: fall back to testing each triangle independently, which
+        // is noisier but cannot delete the face.
+        if flood.iter().any(|k| *k) {
+            flood
+        } else {
+            warns.push(format!(
+                "face #{}: flood fill kept nothing; per-triangle trim",
+                face.id
+            ));
+            simplices.iter().map(|t| clf.inside(centroid(t))).collect()
+        }
+    } else {
+        simplices.iter().map(|t| clf.inside(centroid(t))).collect()
+    };
     let mut tris: Vec<[usize; 3]> = simplices
         .iter()
         .zip(&keep)
@@ -1238,25 +1359,25 @@ fn tessellate_face(
         .map(|(uv, p3)| p3.unwrap_or_else(|| surf.eval(*uv)))
         .collect();
 
-    // Orient outward: parametric normal x surface sense x face sense, decided
-    // on the largest triangle (most numerically reliable) and applied to all.
-    let mut big = 0usize;
-    let mut big_area = 0.0f64;
-    for (i, t) in tris.iter().enumerate() {
-        let (a, b, c) = (all_uv[t[0]], all_uv[t[1]], all_uv[t[2]]);
-        let area = ((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])).abs();
-        if area > big_area {
-            big_area = area;
-            big = i;
+    // Orient outward: parametric normal x surface sense x face sense. Decided
+    // by an area-weighted vote over every triangle rather than from a single
+    // one -- near a pole or on a sliver the surface normal is unreliable, and
+    // one bad sample used to flip an entire face, which the manifold check
+    // then sees as every shared edge of that face being wound the wrong way.
+    let mut vote = 0.0f64;
+    for t in tris.iter() {
+        let n_geo = cross(
+            sub(verts3d[t[1]], verts3d[t[0]]),
+            sub(verts3d[t[2]], verts3d[t[0]]),
+        );
+        let area = norm(n_geo);
+        if area <= 0.0 {
+            continue;
         }
+        let n_out = vscale(surf.normal(centroid(t)), surf.sense_sign() * face_sign);
+        vote += area * dot(n_geo, n_out).signum();
     }
-    let t = tris[big];
-    let n_geo = cross(
-        sub(verts3d[t[1]], verts3d[t[0]]),
-        sub(verts3d[t[2]], verts3d[t[0]]),
-    );
-    let n_out = vscale(surf.normal(centroid(&t)), surf.sense_sign() * face_sign);
-    if dot(n_geo, n_out) < 0.0 {
+    if vote < 0.0 {
         for t in tris.iter_mut() {
             t.swap(1, 2);
         }
