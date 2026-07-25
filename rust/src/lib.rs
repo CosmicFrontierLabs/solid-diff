@@ -8,8 +8,10 @@
 //! ```
 
 pub mod container;
+pub mod font;
 pub mod geom;
 pub mod graph;
+pub mod iso;
 pub mod mesh;
 pub mod render;
 pub mod sections;

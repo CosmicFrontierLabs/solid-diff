@@ -27,8 +27,23 @@ R=target/release/solid-diff
 $R scan    part.SLDPRT --streams        # container streams + Parasolid found
 $R extract part.SLDPRT -o out/          # carve embedded .x_b transmits
 $R mesh    part.SLDPRT -o part.obj --stl part.stl --stats
-$R render  *.SLDPRT -o sheet.svg --size 360     # translucent contact sheet
+$R render  *.SLDPRT -o sheet.svg --size 360     # translucent x-ray SVG
+$R iso     *.SLDPRT -o sheet.png --size 420     # matte isometric PNG
 ```
+
+Two rendering styles, for different jobs:
+
+| | `render` (SVG) | `iso` (PNG) |
+|---|---|---|
+| look | translucent x-ray, feature edges | matte solid, soft shading |
+| shows | internal structure through the part | outward form and surface finish |
+| method | painter's algorithm over exact BSP order | area-sampled point splats, z-buffered |
+| output | vector, scales losslessly | raster, transparent background |
+| cost | grows with triangle count | grows with pixels, not triangles |
+
+`iso` also builds annotated contact sheets — part name, bounding box in cm,
+triangle count and an auto-scaled scale bar per tile — matching the visual
+style of the GLB tooling in `tamalpais-configuration`.
 
 The Python equivalents (`python -m solid_diff.{psscan,extract,brep2mesh,render}`)
 take the same arguments.
@@ -59,6 +74,8 @@ take the same arguments.
 | `rust/src/geom/` | curve and surface evaluators |
 | `rust/src/tess.rs` | tessellation (parity trimming, shared edge sampling) |
 | `rust/src/render.rs` | painter's-algorithm SVG renderer (BSP ordering) |
+| `rust/src/iso.rs` | isometric point-splat PNG renderer + contact sheets |
+| `rust/src/font.rs` | 5x7 bitmap font for image annotations |
 | `solid_diff/` | Python prototype / cross-check oracle |
 | `tools/` | corpus census, Rust-vs-Python parity harness |
 | `samples/fetch.sh` | fetch the public test corpus (16 parts) |

@@ -60,14 +60,27 @@ exactly). Ring test part volume matches analytic to 0.1%
 up to ~30k triangles; the worst offenders are thread helices (parts 09/13)
 and two open sheet bodies where open edges are real geometry.
 
-## Rendering (`render.py`)
+## Rendering
 
-Translucent painter's-algorithm SVG: exact back-to-front ordering via a BSP
-tree (crossing polygons split; auto-fallback to centroid depth sort beyond
-12k triangles), real per-face colors (`SDL/TYSA_COLOUR`) with a
-`color_map={face_id: rgb}` override hook for diff rendering, feature-edge
-strokes (open edges + dihedral > 28°), orthographic or `--fov` perspective,
-key/fill lighting with interior (backface) tinting.
+Two styles, both fed from the same `Mesh`.
+
+**Translucent x-ray SVG** (`render.rs`, `render.py`): exact back-to-front
+ordering via a BSP tree (crossing polygons split; auto-fallback to centroid
+depth sort beyond 12k triangles), real per-face colors (`SDL/TYSA_COLOUR`)
+with a `color_map={face_id: rgb}` override hook for diff rendering,
+feature-edge strokes (open edges + dihedral > 28°), orthographic or `--fov`
+perspective, key/fill lighting with interior (backface) tinting.
+
+**Matte isometric PNG** (`iso.rs`, Rust only): area-weighted random points
+are scattered over the triangles, projected isometrically and z-buffered
+with a 2×2 splat, then shaded two-sided Lambert
+(`0.22 + 0.78·|N·L|`) in one steel-blue hue on a transparent background.
+Because cost scales with pixels rather than triangles, a 68k-triangle part
+renders in ~6 s at 700 px and a million-triangle part costs the same. The
+style (and the annotated contact sheet built on it — name, bounding box,
+triangle count, auto-scaled scale bar) matches the GLB tooling in
+`tamalpais-configuration`. Framing fits the *projected* silhouette, not the
+axis extents, so nothing spills out of frame at any orientation.
 
 ## Known gaps
 

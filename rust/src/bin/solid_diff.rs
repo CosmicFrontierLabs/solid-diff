@@ -6,13 +6,16 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
 
+use solid_diff::iso::{contact_sheet, render_iso, IsoOptions, Tile};
 use solid_diff::render::{render_mesh_svg, svg_document, Order, RenderOptions};
 use solid_diff::{body_graphs, container, mesh_file, sections, tess, xt, Graph};
 
 #[derive(Parser)]
 #[command(
     name = "solid-diff",
-    about = "Read, mesh and render SolidWorks part files"
+    about = "Read, mesh and render SolidWorks part files",
+    // so `--az -35` works without needing `--az=-35`
+    allow_negative_numbers = true
 )]
 struct Cli {
     #[command(subcommand)]
@@ -50,7 +53,38 @@ enum Cmd {
         #[arg(short, long)]
         quiet: bool,
     },
+    /// Render parts as isometric PNGs (matte point-splat style).
+    ///
+    /// With one input and a .png output, writes a single transparent render;
+    /// otherwise builds an annotated contact sheet.
+    #[command(allow_negative_numbers = true)]
+    Iso {
+        files: Vec<PathBuf>,
+        #[arg(short, long, default_value = "iso.png")]
+        out: PathBuf,
+        #[arg(long, default_value_t = -35.0)]
+        az: f64,
+        #[arg(long, default_value_t = 25.0)]
+        el: f64,
+        /// Image size (or tile size for a contact sheet), in pixels.
+        #[arg(long, default_value_t = 1000)]
+        size: u32,
+        /// Override the sample count (default scales with resolution).
+        #[arg(long)]
+        samples: Option<usize>,
+        /// Force a contact sheet even for a single input.
+        #[arg(long)]
+        sheet: bool,
+        #[arg(long)]
+        cols: Option<usize>,
+        /// Paint faces in their own colours instead of one steel-blue hue.
+        #[arg(long)]
+        face_colors: bool,
+        #[arg(long)]
+        tol: Option<f64>,
+    },
     /// Render parts to an SVG contact sheet.
+    #[command(allow_negative_numbers = true)]
     Render {
         files: Vec<PathBuf>,
         #[arg(short, long, default_value = "render.svg")]
@@ -107,6 +141,28 @@ fn main() -> ExitCode {
             stats,
             quiet,
         } => cmd_mesh(&file, obj.as_deref(), stl.as_deref(), tol, stats, quiet),
+        Cmd::Iso {
+            files,
+            out,
+            az,
+            el,
+            size,
+            samples,
+            sheet,
+            cols,
+            face_colors,
+            tol,
+        } => {
+            let opts = IsoOptions {
+                az,
+                el,
+                samples,
+                size,
+                face_colors,
+                ..IsoOptions::default()
+            };
+            cmd_iso(&files, &out, &opts, sheet, cols, tol)
+        }
         Cmd::Render {
             files,
             out,
@@ -290,6 +346,48 @@ fn cmd_mesh(
     } else {
         ExitCode::SUCCESS
     }
+}
+
+fn cmd_iso(
+    files: &[PathBuf],
+    out: &Path,
+    opts: &IsoOptions,
+    force_sheet: bool,
+    cols: Option<usize>,
+    tol: Option<f64>,
+) -> ExitCode {
+    let mut tiles = Vec::new();
+    for path in files {
+        let name = path
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        match mesh_file(path, tol) {
+            Ok(mesh) => {
+                println!("{}: {} triangles", path.display(), mesh.triangles.len());
+                tiles.push(Tile { name, mesh });
+            }
+            Err(e) => println!("{}: FAILED: {e}", path.display()),
+        }
+    }
+    if tiles.is_empty() {
+        eprintln!("nothing to render");
+        return ExitCode::FAILURE;
+    }
+
+    let img = if tiles.len() == 1 && !force_sheet {
+        render_iso(&tiles[0].mesh, opts)
+    } else {
+        let cols = cols.unwrap_or_else(|| (tiles.len() as f64).sqrt().ceil().max(1.0) as usize);
+        contact_sheet(&tiles, cols, opts.size as usize, opts)
+    };
+    if let Err(e) = img.write_png(out) {
+        eprintln!("write {}: {e}", out.display());
+        return ExitCode::FAILURE;
+    }
+    println!("wrote {} ({}x{})", out.display(), img.w, img.h);
+    ExitCode::SUCCESS
 }
 
 fn cmd_render(

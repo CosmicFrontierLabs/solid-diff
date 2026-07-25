@@ -9,6 +9,7 @@ license = "MIT"
 flate2 = "1"
 spade = "2"
 clap = { version = "4", features = ["derive"] }
+png = "0.18.1"
 
 [profile.release]
 opt-level = 3
