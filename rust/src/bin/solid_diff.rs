@@ -335,6 +335,7 @@ fn cmd_mesh(
             mesh.surface_area(),
             mesh.bbox_diagonal()
         );
+        println!("  {}", mesh.manifold_report());
     }
     if !quiet {
         for w in &mesh.warnings {
