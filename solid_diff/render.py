@@ -92,46 +92,58 @@ class _BspNode:
     __slots__ = ("pn", "pd", "coplanar", "front", "back")
 
 
-def _build_bsp(polys, eps, depth=0):
+def _build_bsp(polys, eps):
+    """Iterative BSP build (explicit stack; tree depth can exceed Python's)."""
     if not polys:
         return None
-    node = _BspNode()
-    splitter = polys[len(polys) // 2]
-    node.pn = splitter.normal
-    node.pd = float(node.pn @ splitter.pts[0])
-    node.coplanar = [splitter]
-    front, back = [], []
-    for p in polys[: len(polys) // 2] + polys[len(polys) // 2 + 1:]:
-        d = p.pts @ node.pn - node.pd
-        if np.all(np.abs(d) <= eps):
-            node.coplanar.append(p)
-        elif np.all(d >= -eps):
-            front.append(p)
-        elif np.all(d <= eps):
-            back.append(p)
-        else:
-            f, b = _split_poly(p, node.pn, node.pd, eps)
-            if f is not None:
-                front.append(f)
-            if b is not None:
-                back.append(b)
-    node.front = _build_bsp(front, eps, depth + 1)
-    node.back = _build_bsp(back, eps, depth + 1)
-    return node
+    root = _BspNode()
+    stack = [(root, polys)]
+    while stack:
+        node, items = stack.pop()
+        splitter = items[len(items) // 2]
+        node.pn = splitter.normal
+        node.pd = float(node.pn @ splitter.pts[0])
+        node.coplanar = [splitter]
+        front, back = [], []
+        for p in items[: len(items) // 2] + items[len(items) // 2 + 1:]:
+            d = p.pts @ node.pn - node.pd
+            if np.all(np.abs(d) <= eps):
+                node.coplanar.append(p)
+            elif np.all(d >= -eps):
+                front.append(p)
+            elif np.all(d <= eps):
+                back.append(p)
+            else:
+                f, b = _split_poly(p, node.pn, node.pd, eps)
+                if f is not None:
+                    front.append(f)
+                if b is not None:
+                    back.append(b)
+        for attr, sub in (("front", front), ("back", back)):
+            if sub:
+                child = _BspNode()
+                setattr(node, attr, child)
+                stack.append((child, sub))
+            else:
+                setattr(node, attr, None)
+    return root
 
 
-def _traverse_bsp(node, eye_dir, out):
-    """Back-to-front traversal for an orthographic view direction."""
-    if node is None:
-        return
-    if node.pn @ eye_dir < 0:
-        _traverse_bsp(node.front, eye_dir, out)
-        out.extend(node.coplanar)
-        _traverse_bsp(node.back, eye_dir, out)
-    else:
-        _traverse_bsp(node.back, eye_dir, out)
-        out.extend(node.coplanar)
-        _traverse_bsp(node.front, eye_dir, out)
+def _traverse_bsp(root, eye_dir, out):
+    """Iterative back-to-front traversal for an orthographic view direction."""
+    stack = [(root, False)]
+    while stack:
+        node, emit = stack.pop()
+        if node is None:
+            continue
+        if emit:
+            out.extend(node.coplanar)
+            continue
+        near, far = ((node.front, node.back) if node.pn @ eye_dir < 0
+                     else (node.back, node.front))
+        stack.append((far, False))
+        stack.append((node, True))
+        stack.append((near, False))
 
 
 # ── Rendering ────────────────────────────────────────────────────────────────
