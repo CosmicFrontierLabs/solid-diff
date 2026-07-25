@@ -115,19 +115,29 @@ def main() -> None:
     ap.add_argument("--elev", type=float, default=28.0)
     ap.add_argument("--azim", type=float, default=-55.0)
     ap.add_argument("--size", type=int, default=520, help="px per part cell")
+    ap.add_argument("--cols", type=int, default=None,
+                    help="grid columns (default: ~square)")
     ap.add_argument("--tol", type=float, default=None)
     args = ap.parse_args()
 
     frags = []
     for path in args.inputs:
-        mesh = mesh_file(path, args.tol)
-        frags.append(
-            render_mesh_svg(mesh, alpha=args.alpha, elev=args.elev,
-                            azim=args.azim, size=args.size,
-                            title=Path(path).stem)
-        )
-        print(f"{path}: {len(mesh.triangles)} triangles rendered")
-    cols = 2 if len(frags) > 1 else 1
+        title = Path(path).stem
+        try:
+            mesh = mesh_file(path, args.tol)
+            frags.append(
+                render_mesh_svg(mesh, alpha=args.alpha, elev=args.elev,
+                                azim=args.azim, size=args.size, title=title)
+            )
+            print(f"{path}: {len(mesh.triangles)} triangles rendered")
+        except Exception as e:
+            print(f"{path}: FAILED: {e}")
+            frags.append(
+                f'<g><text x="{args.size/2:.0f}" y="{args.size/2:.0f}" '
+                f'text-anchor="middle" fill="#f7768e" font-size="12" '
+                f'font-family="sans-serif">{title}: failed</text></g>'
+            )
+    cols = args.cols or max(1, int(np.ceil(np.sqrt(len(frags)))))
     Path(args.out).write_text(svg_document(frags, cols, args.size))
     print(f"wrote {args.out}")
 

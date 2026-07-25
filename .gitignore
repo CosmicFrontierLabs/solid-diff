@@ -8,3 +8,4 @@ __pycache__/
 *.x_b
 *.x_t
 .venv/
+renders/

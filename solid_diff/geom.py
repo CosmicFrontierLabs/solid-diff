@@ -73,8 +73,8 @@ class Ellipse(Curve):
 
     def __init__(self, node):
         self.c = np.asarray(node["centre"], dtype=float)
-        self.r1 = float(node["r1"])
-        self.r2 = float(node["r2"])
+        self.r1 = float(node["major_radius"])
+        self.r2 = float(node["minor_radius"])
         self.x = _unit(node["x_axis"])
         self.n = _unit(node["normal"])
         self.y = np.cross(self.n, self.x)
