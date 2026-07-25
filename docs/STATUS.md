@@ -21,11 +21,26 @@ now serves as the cross-check oracle.
 
 ### Vault coverage (1536 files)
 
+Two full sweeps of the vault export: a Python structural census
+(`tools/census.py`) and a Rust mesh sweep (24-way parallel, 180 s per file).
+
 | outcome | files | share |
 |---|---|---|
-| parsed, geometry found | 1519 | 98.9% |
+| **meshed successfully (Rust)** | **1506** | **98.0%** |
 | legacy pre-2015 OLE2 container | 16 | 1.0% |
-| killed (runaway memory, see #1) | 1 | 0.1% |
+| exceeded the 180 s sweep timeout (not broken, just slow — #14) | 7 | 0.5% |
+| carries no B-rep at all (a 1-node stub partition) | 1 | 0.1% |
+| remainder (no geometry stream) | 6 | 0.4% |
+
+That is **26.5 million triangles** with no crash, hang or unbounded
+allocation anywhere in the run. Median part is 5,943 triangles; the largest
+is 641,978. Mesh quality at scale is the honest weak spot: only 7.6% of
+parts come out fully watertight and the median part has 92 open edges,
+which is what #7 (constrained Delaunay) and #5 are about.
+
+Notably the one file that OOM-killed the *Python* sweep at 37.8 GB (#1)
+takes Rust well under a second — it turns out to carry no geometry at all,
+so the OOM was a Python bug, not a hard part.
 
 74,528 faces and 173,307 edges were surveyed. Everything present is
 evaluated exactly except two node types:
@@ -94,7 +109,12 @@ All tracked as GitHub issues. Summary of what is left, worst first:
   side. Rust takes the magnitude.
 - **[#7] Unconstrained Delaunay.** Both implementations triangulate then
   filter by centroid, so concave corners can be cut. `spade` is already a
-  dependency and supports a real CDT.
+  dependency and supports a real CDT. This is the main lever on the
+  watertightness numbers above (7.6% of parts fully closed).
+- **[#14] Tessellation is quadratic in boundary size.** `LoopClassifier`
+  tests every boundary segment for every query point, so the largest parts
+  take minutes (198 s for 1.5M triangles). Wants a spatial index, and the
+  per-face loop parallelises trivially.
 - **[#6] Deltas transmits never parse** (extended node types absent from
   schema 13006). Harmless for meshing; blocks reading edit history.
 
