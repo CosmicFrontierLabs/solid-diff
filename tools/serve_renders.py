@@ -9,7 +9,9 @@ without leaving the viewer.
     python3 tools/serve_renders.py [--root renders] [--port 8791]
     python3 tools/serve_renders.py --parts /path/to/parts   # part-by-part review
 
-Pair with `agent-portal forward <port>` to reach it from a browser.
+Pair with `agent-portal forward <port>` to reach it from a browser. Re-running
+`forward` issues a NEW hostname and retires the old one, so re-register it only
+when you mean to; a stale URL presents as a connection timeout, not a 404.
 
 Thumbnails are generated once and cached in memory (Pillow if available), so a
 page of 4K sheets loads in kilobytes rather than tens of megabytes. Range
@@ -451,8 +453,20 @@ def report_page() -> bytes:
 """.encode()
 
 
+class Server(ThreadingHTTPServer):
+    daemon_threads = True
+    # A browser opens several connections per page and a render can hold a
+    # thread for seconds; the stdlib default backlog of 5 drops the rest, which
+    # a proxy in front reports as a connection timeout rather than a refusal.
+    request_queue_size = 128
+    allow_reuse_address = True
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "solid-diff-renders"
+    # Keep-alive: without it every asset is a fresh connection, which is what
+    # exhausts the backlog above. Every response here sets Content-Length.
+    protocol_version = "HTTP/1.1"
 
     def log_message(self, fmt, *args):
         sys.stderr.write("  %s\n" % (fmt % args))
@@ -786,8 +800,7 @@ def main():
             f"({len(FLAGS)} already flagged), cache {CACHE}"
         )
 
-    srv = ThreadingHTTPServer((args.bind, args.port), Handler)
-    srv.daemon_threads = True
+    srv = Server((args.bind, args.port), Handler)
     n = sum(1 for _ in ROOT.rglob("*") if _.is_file())
     print(f"serving {ROOT} ({n} files) on http://{socket.gethostname()}:{args.port}/")
     if PARTS:
