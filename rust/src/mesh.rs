@@ -175,9 +175,13 @@ impl std::fmt::Display for ManifoldReport {
 
 impl Mesh {
     /// Check the mesh with the directed-edge rule; see [`ManifoldReport`].
+    ///
+    /// Each undirected edge is classified once, so the counts do not overlap:
+    /// used by one triangle is a hole, by two triangles traversing it the same
+    /// way is a winding mismatch, by more than two is non-manifold.
     pub fn manifold_report(&self) -> ManifoldReport {
-        let mut directed: HashMap<(u32, u32), u32> = HashMap::new();
-        let mut undirected: HashMap<(u32, u32), u32> = HashMap::new();
+        // (total uses, uses in the low->high direction)
+        let mut edges: HashMap<(u32, u32), (u32, u32)> = HashMap::new();
         let mut r = ManifoldReport {
             triangles: self.triangles.len(),
             ..Default::default()
@@ -188,20 +192,26 @@ impl Mesh {
                 continue;
             }
             for (a, b) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
-                *directed.entry((a, b)).or_insert(0) += 1;
-                *undirected.entry((a.min(b), a.max(b))).or_insert(0) += 1;
+                let e = edges.entry((a.min(b), a.max(b))).or_insert((0, 0));
+                e.0 += 1;
+                if a < b {
+                    e.1 += 1;
+                }
             }
         }
-        for (&(a, b), &n) in &directed {
-            // Same direction twice: the neighbour is wound the wrong way.
-            if n > 1 {
-                r.flipped += (n - 1) as usize;
-            }
-            if !directed.contains_key(&(b, a)) {
-                r.boundary += n as usize;
+        for &(total, forward) in edges.values() {
+            match total {
+                1 => r.boundary += 1,
+                2 => {
+                    // Both uses in the same direction: the two triangles
+                    // sharing this edge are wound opposite to each other.
+                    if forward != 1 {
+                        r.flipped += 1;
+                    }
+                }
+                _ => r.non_manifold += 1,
             }
         }
-        r.non_manifold = undirected.values().filter(|c| **c > 2).count();
         r
     }
 }
