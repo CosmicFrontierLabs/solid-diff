@@ -130,3 +130,149 @@ impl Mesh {
         norm(sub(hi, lo))
     }
 }
+
+/// Result of the directed-edge manifold check.
+///
+/// In a closed, consistently-oriented triangle mesh every directed edge
+/// `a -> b` appears exactly once, and its opposite `b -> a` appears exactly
+/// once on the neighbouring triangle. Checking direction rather than just
+/// counting undirected edges catches three distinct defects at once: holes,
+/// non-manifold junctions, and neighbours whose winding disagrees.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ManifoldReport {
+    pub triangles: usize,
+    /// Directed edges with no opposite: the mesh has a hole here.
+    pub boundary: usize,
+    /// Directed edges traversed the same way by two triangles, i.e. the two
+    /// share an edge but wind oppositely — one of them is flipped.
+    pub flipped: usize,
+    /// Undirected edges shared by more than two triangles.
+    pub non_manifold: usize,
+    /// Triangles with a repeated vertex.
+    pub degenerate: usize,
+}
+
+impl ManifoldReport {
+    /// A closed, consistently-oriented, manifold surface.
+    pub fn is_watertight(&self) -> bool {
+        self.boundary == 0 && self.flipped == 0 && self.non_manifold == 0 && self.degenerate == 0
+    }
+}
+
+impl std::fmt::Display for ManifoldReport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.is_watertight() {
+            return write!(f, "watertight ({} triangles)", self.triangles);
+        }
+        write!(
+            f,
+            "not watertight: {} boundary, {} flipped, {} non-manifold, {} degenerate \
+             (of {} triangles)",
+            self.boundary, self.flipped, self.non_manifold, self.degenerate, self.triangles
+        )
+    }
+}
+
+impl Mesh {
+    /// Check the mesh with the directed-edge rule; see [`ManifoldReport`].
+    pub fn manifold_report(&self) -> ManifoldReport {
+        let mut directed: HashMap<(u32, u32), u32> = HashMap::new();
+        let mut undirected: HashMap<(u32, u32), u32> = HashMap::new();
+        let mut r = ManifoldReport {
+            triangles: self.triangles.len(),
+            ..Default::default()
+        };
+        for t in &self.triangles {
+            if t[0] == t[1] || t[1] == t[2] || t[0] == t[2] {
+                r.degenerate += 1;
+                continue;
+            }
+            for (a, b) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+                *directed.entry((a, b)).or_insert(0) += 1;
+                *undirected.entry((a.min(b), a.max(b))).or_insert(0) += 1;
+            }
+        }
+        for (&(a, b), &n) in &directed {
+            // Same direction twice: the neighbour is wound the wrong way.
+            if n > 1 {
+                r.flipped += (n - 1) as usize;
+            }
+            if !directed.contains_key(&(b, a)) {
+                r.boundary += n as usize;
+            }
+        }
+        r.non_manifold = undirected.values().filter(|c| **c > 2).count();
+        r
+    }
+}
+
+#[cfg(test)]
+mod manifold_tests {
+    use super::*;
+
+    /// Closed, consistently-wound tetrahedron.
+    fn tetra() -> Mesh {
+        Mesh {
+            vertices: vec![
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+            ],
+            triangles: vec![[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]],
+            face_ids: vec![1, 2, 3, 4],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn closed_solid_is_watertight() {
+        let r = tetra().manifold_report();
+        assert!(r.is_watertight(), "{r}");
+        assert_eq!(r.triangles, 4);
+        assert_eq!(r.boundary, 0);
+    }
+
+    #[test]
+    fn a_hole_shows_up_as_boundary_edges() {
+        let mut m = tetra();
+        m.triangles.pop();
+        m.face_ids.pop();
+        let r = m.manifold_report();
+        assert!(!r.is_watertight());
+        assert_eq!(r.boundary, 3, "the three edges of the missing face: {r}");
+        assert_eq!(r.flipped, 0);
+    }
+
+    #[test]
+    fn a_reversed_neighbour_is_caught_though_no_edge_is_missing() {
+        // Undirected counting cannot see this: every edge still has exactly
+        // two users. Only the direction reveals the flip.
+        let mut m = tetra();
+        m.triangles[3] = [1, 3, 2];
+        let r = m.manifold_report();
+        assert_eq!(
+            r.flipped, 3,
+            "3 edges now traversed the same way twice: {r}"
+        );
+        assert!(!r.is_watertight());
+        assert_eq!(
+            m.boundary_edge_count(),
+            0,
+            "the naive check calls this closed"
+        );
+    }
+
+    #[test]
+    fn non_manifold_and_degenerate_are_reported() {
+        let mut m = tetra();
+        m.vertices.push([1.0, 1.0, 1.0]);
+        m.triangles.push([0, 1, 4]); // a fin on an existing edge
+        m.face_ids.push(5);
+        m.triangles.push([2, 2, 3]); // degenerate
+        m.face_ids.push(6);
+        let r = m.manifold_report();
+        assert_eq!(r.degenerate, 1, "{r}");
+        assert!(r.non_manifold >= 1, "edge 0-1 now has three users: {r}");
+    }
+}
