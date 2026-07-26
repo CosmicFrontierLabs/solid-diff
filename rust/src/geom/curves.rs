@@ -429,7 +429,7 @@ impl Curve for Nurbs {
 
 /// Surfaces with a closed-form evaluator, so refining a curve against them
 /// moves it towards the truth rather than towards a model's mistakes.
-const EXACT_SURFACES: &[&str] = &[
+pub const EXACT_SURFACES: &[&str] = &[
     "PLANE",
     "CYLINDER",
     "CONE",
@@ -502,6 +502,75 @@ impl SurfacePair {
             return seed;
         }
         p
+    }
+}
+
+impl SurfacePair {
+    /// Unit tangent of the intersection curve at `p`: both normals are
+    /// perpendicular to the curve, so their cross product runs along it.
+    pub fn tangent(&self, p: P3) -> Option<P3> {
+        let (_, n1) = foot(&*self.a, p);
+        let (_, n2) = foot(&*self.b, p);
+        let t = cross(n1, n2);
+        let len = norm(t);
+        if !len.is_finite() || len < 1e-9 {
+            return None; // tangent surfaces: direction undefined
+        }
+        Some(scale(t, 1.0 / len))
+    }
+
+    /// Trace the intersection from `a` to `b`, following the curve itself.
+    ///
+    /// Snapping the midpoint of a long chord is not enough: two surfaces can
+    /// meet in several branches, and a midpoint far from the curve lands on
+    /// whichever is nearest, which need not be the branch the edge is on.
+    /// Marching along the local tangent cannot jump branches.
+    ///
+    /// Returns `None` rather than a guess if the march stalls or fails to
+    /// arrive, so a bad reconstruction never silently replaces the chord.
+    pub fn trace(&self, a: P3, b: P3, steps: usize) -> Option<Vec<P3>> {
+        let span = dist(a, b);
+        if !span.is_finite() || span <= 0.0 {
+            return None;
+        }
+        let mut h = span / steps as f64;
+        let mut pts = vec![a];
+        let mut p = a;
+        for _ in 0..steps * 8 {
+            if dist(p, b) <= h * 1.5 {
+                pts.push(b);
+                return (pts.len() > 2).then_some(pts);
+            }
+            let t = self.tangent(p)?;
+            // Head towards b, and keep heading the way we already went so a
+            // curve bending past 90 degrees does not double back on itself.
+            let prev = if pts.len() >= 2 {
+                sub(p, pts[pts.len() - 2])
+            } else {
+                sub(b, a)
+            };
+            let dir = if dot(t, prev) >= 0.0 {
+                t
+            } else {
+                scale(t, -1.0)
+            };
+            let next = self.snap(add(p, scale(dir, h)), h * 2.0);
+            let moved = dist(next, p);
+            if !moved.is_finite() || moved <= h * 0.25 {
+                // Stalled: the snap pulled us back where we started.
+                h *= 0.5;
+                if h < span * 1e-4 {
+                    return None;
+                }
+                continue;
+            }
+            p = next;
+            pts.push(p);
+            if pts.len() > steps * 4 {
+                return None; // wandering; refuse to guess
+            }
+        }
+        None
     }
 }
 

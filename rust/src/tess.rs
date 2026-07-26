@@ -25,8 +25,8 @@ use spade::{
 };
 
 use crate::geom::{
-    cross, dist, dot, make_curve, make_surface, norm, scale as vscale, sub, unit, Curve, Surface,
-    P2, P3,
+    cross, curves::Polyline, curves::SurfacePair, curves::EXACT_SURFACES, dist, dot, make_curve,
+    make_surface, norm, scale as vscale, sub, unit, Curve, Surface, P2, P3,
 };
 use crate::graph::Graph;
 use crate::mesh::Mesh;
@@ -53,6 +53,109 @@ enum EdgeRange {
         p_start: Option<P3>,
         p_end: Option<P3>,
     },
+}
+
+/// The surface of the face on the other side of a halfedge.
+fn face_surface_node<'a>(graph: &'a Graph, he: &'a Node) -> Option<&'a Node> {
+    let face = graph.deref(graph.deref(he, "loop")?, "face")?;
+    graph.deref(face, "surface")
+}
+
+/// Rebuild an edge that carries no curve, as the intersection of the two
+/// surfaces that meet along it.
+///
+/// Without this the edge became a straight chord between its vertices, which
+/// silently mis-states the boundary of any curved face and, since trimming is
+/// driven entirely by boundary loops, lets the trim leak.
+///
+/// Declines rather than guesses when: either surface is not closed-form (a
+/// BLENDED_EDGE is our reconstruction, not the file's -- see #4), both sides
+/// name the same surface (a seam edge, where the "intersection" is the whole
+/// surface), or the two vertices coincide.
+fn reconstruct_edge(
+    graph: &Graph,
+    edge: &Node,
+    p_start: Option<P3>,
+    p_end: Option<P3>,
+) -> Option<Box<dyn Curve>> {
+    let (a, b) = (p_start?, p_end?);
+    let span = dist(a, b);
+    if !span.is_finite() || span <= 0.0 {
+        return None;
+    }
+    let h = graph.deref(edge, "halfedge")?;
+    let o = graph.deref(h, "other")?;
+    let (sa, sb) = (face_surface_node(graph, h)?, face_surface_node(graph, o)?);
+    if sa.id == sb.id {
+        return None;
+    }
+    if !EXACT_SURFACES.contains(&sa.name.as_str()) || !EXACT_SURFACES.contains(&sb.name.as_str()) {
+        return None;
+    }
+    let pair = SurfacePair {
+        a: make_surface(graph, sa)?,
+        b: make_surface(graph, sb)?,
+    };
+    // The surfaces must actually cross at a usable angle. Where they are close
+    // to tangent the intersection is ill-conditioned and a march wanders; the
+    // chord is the safer answer.
+    for end in [a, b] {
+        pair.tangent(end)?;
+        let n1 = pair.a.normal(pair.a.inv(end));
+        let n2 = pair.b.normal(pair.b.inv(end));
+        if norm(cross(n1, n2)) < 1e-3 {
+            return None;
+        }
+    }
+
+    // March along the intersection from one vertex to the other, then densify.
+    let traced = pair.trace(a, b, 32)?;
+    let curve = Polyline::refined(traced, &pair, span * 1e-4)?;
+
+    // Only accept a reconstruction we can verify. A curve that wanders off the
+    // surfaces, doubles back, or is far longer than the chord it replaces is a
+    // worse answer than the chord: it produces self-intersecting boundary
+    // loops, which show up downstream as non-manifold edges.
+    let traced_len: f64 = curve.pts.windows(2).map(|w| dist(w[0], w[1])).sum();
+    if traced_len > span * 3.0 {
+        return None;
+    }
+    let tol = span * 1e-3;
+    let on_both = curve.pts.iter().all(|p| {
+        dist(pair.a.eval(pair.a.inv(*p)), *p) <= tol && dist(pair.b.eval(pair.b.inv(*p)), *p) <= tol
+    });
+    if !on_both {
+        return None;
+    }
+    // Monotone along the chord: a curve that reverses direction has folded.
+    let axis = vscale(sub(b, a), 1.0 / span);
+    let mut last = f64::NEG_INFINITY;
+    for p in &curve.pts {
+        let t = dot(sub(*p, a), axis);
+        if t < last - span * 1e-6 {
+            return None;
+        }
+        last = last.max(t);
+    }
+
+    let straight = curve
+        .pts
+        .iter()
+        .all(|p| point_line_dist(*p, a, b) <= span * 1e-6);
+    if straight {
+        return None;
+    }
+    Some(Box::new(curve) as Box<dyn Curve>)
+}
+
+/// Perpendicular distance from `p` to the infinite line through `a` and `b`.
+fn point_line_dist(p: P3, a: P3, b: P3) -> f64 {
+    let ab = sub(b, a);
+    let len = norm(ab);
+    if len <= 0.0 {
+        return dist(p, a);
+    }
+    norm(cross(sub(p, a), vscale(ab, 1.0 / len)))
 }
 
 /// Samples edge curves in 3D once, shared by both adjacent faces.
@@ -104,7 +207,12 @@ impl EdgeSampler {
             .and_then(|h| graph.deref(h, "other"))
             .and_then(|o| vertex_point(graph, o, "vertex"));
 
-        let curve = curve_node.and_then(|n| make_curve(graph, n));
+        let curve = curve_node
+            .and_then(|n| make_curve(graph, n))
+            // Parasolid stores plenty of EDGEs with a null curve pointer. The
+            // geometry is not missing, only implicit: the edge is where its
+            // two faces meet, and both surfaces are evaluable (#25).
+            .or_else(|| reconstruct_edge(graph, edge, p_start, p_end));
         let entry = match curve {
             None => match (p_start, p_end) {
                 (Some(a), Some(b)) => Some(EdgeRange::Line(a, b)),
