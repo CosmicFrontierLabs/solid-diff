@@ -3,7 +3,7 @@
 //! Parameterizations only need `eval`/`inv` to invert each other; Parasolid's
 //! exact scaling conventions never matter downstream.
 
-use super::{add, cross, dist, dot, scale, sub, unit, Curve, P3, TWO_PI};
+use super::{add, cross, dist, dot, norm, scale, sub, unit, Curve, Surface, P3, TWO_PI};
 use crate::graph::Graph;
 use crate::value::Node;
 
@@ -427,6 +427,90 @@ impl Curve for Nurbs {
 
 // ── polyline (INTERSECTION charts) ──────────────────────────────────────────
 
+/// Surfaces with a closed-form evaluator, so refining a curve against them
+/// moves it towards the truth rather than towards a model's mistakes.
+const EXACT_SURFACES: &[&str] = &[
+    "PLANE",
+    "CYLINDER",
+    "CONE",
+    "SPHERE",
+    "TORUS",
+    "SWEPT_SURF",
+    "SPUN_SURF",
+    "B_SURFACE",
+    "OFFSET_SURF",
+];
+
+/// Total chord length of an open polyline.
+fn chord_len(pts: &[P3]) -> f64 {
+    pts.windows(2).map(|w| dist(w[0], w[1])).sum()
+}
+
+/// The two surfaces an INTERSECTION curve runs along.
+///
+/// A chart stores only as many samples as Parasolid needed for its own
+/// chordal tolerance, and between them the polyline drifts off both surfaces.
+/// The curve is not underdetermined though: it is exactly the locus where
+/// these two surfaces meet, and both are evaluable, so a sample can be pulled
+/// back onto it.
+pub struct SurfacePair {
+    pub a: Box<dyn Surface>,
+    pub b: Box<dyn Surface>,
+}
+
+impl SurfacePair {
+    /// Nearest point on the intersection of both surfaces, from a seed nearby.
+    ///
+    /// One Newton step takes the minimum-norm move satisfying both tangent
+    /// planes at once: with unit normals n1, n2 and offsets d1, d2, solving
+    /// `n1.delta = d1, n2.delta = d2` for the shortest delta gives a step
+    /// perpendicular to the intersection's tangent, so the point slides onto
+    /// the curve without sliding *along* it -- which is what keeps the
+    /// parameterisation monotone.
+    pub fn snap(&self, seed: P3, max_move: f64) -> P3 {
+        let mut p = seed;
+        for _ in 0..12 {
+            let (p1, n1) = foot(&*self.a, p);
+            let (p2, n2) = foot(&*self.b, p);
+            let (d1, d2) = (dot(n1, sub(p1, p)), dot(n2, sub(p2, p)));
+            if d1.abs() < 1e-14 && d2.abs() < 1e-14 {
+                break;
+            }
+            let c = dot(n1, n2);
+            let det = 1.0 - c * c;
+            if det.abs() < 1e-6 {
+                // Surfaces tangent here: the intersection is ill-conditioned
+                // and a Newton step would fly off. Leave the seed alone.
+                return seed;
+            }
+            let step = add(
+                scale(n1, (d1 - c * d2) / det),
+                scale(n2, (d2 - c * d1) / det),
+            );
+            let len = norm(step);
+            if !len.is_finite() {
+                return seed;
+            }
+            p = add(p, step);
+            if len < 1e-15 {
+                break;
+            }
+        }
+        // A refinement that runs away is worse than none: the seed is already
+        // within the chart's chordal error of the truth.
+        if !p[0].is_finite() || dist(p, seed) > max_move {
+            return seed;
+        }
+        p
+    }
+}
+
+/// Closest point on a surface to `p`, with the unit normal there.
+fn foot(s: &dyn Surface, p: P3) -> (P3, P3) {
+    let uv = s.inv(p);
+    (s.eval(uv), s.normal(uv))
+}
+
 /// Chart-backed curve (INTERSECTION etc.): ordered 3D sample points,
 /// arc-length parameterized.
 pub struct Polyline {
@@ -436,6 +520,47 @@ pub struct Polyline {
 }
 
 impl Polyline {
+    /// Densify a chart against the two surfaces it separates.
+    ///
+    /// Splits any segment whose midpoint, once pulled onto the intersection,
+    /// sits further than `tol` off the chord, so the stored polyline tracks
+    /// the true curve rather than Parasolid's minimal sampling of it.
+    pub fn refined(pts: Vec<P3>, pair: &SurfacePair, tol: f64) -> Option<Self> {
+        const MAX_PTS: usize = 512;
+        let mut pts = pts;
+        if pts.len() < 2 {
+            return None;
+        }
+        // The seeds themselves should already be on the curve; snapping them
+        // costs little and fixes charts that were stored coarsely.
+        let span = chord_len(&pts);
+        for p in pts.iter_mut() {
+            *p = pair.snap(*p, span * 0.05);
+        }
+        for _ in 0..8 {
+            if pts.len() >= MAX_PTS {
+                break;
+            }
+            let mut out = Vec::with_capacity(pts.len() * 2);
+            let mut split = false;
+            for w in pts.windows(2) {
+                out.push(w[0]);
+                let mid = scale(add(w[0], w[1]), 0.5);
+                let on = pair.snap(mid, dist(w[0], w[1]));
+                if dist(on, mid) > tol {
+                    out.push(on);
+                    split = true;
+                }
+            }
+            out.push(*pts.last().unwrap());
+            pts = out;
+            if !split {
+                break;
+            }
+        }
+        Polyline::new(pts)
+    }
+
     pub fn new(pts: Vec<P3>) -> Option<Self> {
         if pts.len() < 2 {
             return None;
@@ -472,16 +597,28 @@ impl Curve for Polyline {
     }
 
     fn inv(&self, p: P3) -> f64 {
-        let mut best = 0usize;
+        // Project onto the nearest *segment*, not the nearest stored sample.
+        // Snapping to samples quantises the parameter to the chart's spacing,
+        // which on a coarsely charted curve put `eval(inv(p))` up to half a
+        // segment away from p -- the single largest error in these curves.
+        let mut best = 0.0;
         let mut bestd = f64::INFINITY;
-        for (i, q) in self.pts.iter().enumerate() {
-            let d = dist(*q, p);
+        for i in 0..self.pts.len() - 1 {
+            let (a, b) = (self.pts[i], self.pts[i + 1]);
+            let ab = sub(b, a);
+            let len2 = dot(ab, ab);
+            let f = if len2 > 0.0 {
+                (dot(sub(p, a), ab) / len2).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let d = dist(add(a, scale(ab, f)), p);
             if d < bestd {
                 bestd = d;
-                best = i;
+                best = self.s[i] + f * (self.s[i + 1] - self.s[i]);
             }
         }
-        self.s[best]
+        best
     }
 
     fn full_range(&self) -> Option<(f64, f64)> {
@@ -542,6 +679,52 @@ pub fn make_curve(graph: &Graph, node: &Node) -> Option<Box<dyn Curve>> {
             let chart = graph.deref(node, "chart")?;
             let flat = chart.f64_vec("hvec")?;
             let pts: Vec<P3> = flat.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect();
+            if pts.len() < 2 {
+                return None;
+            }
+            // INTERSECTION names the two surfaces it runs along (schema 13006:
+            // `surface` is an array of two). With both in hand the chart is a
+            // seed, not the answer.
+            let nodes: Vec<&Node> = node
+                .ptrs("surface")
+                .iter()
+                .filter_map(|id| graph.get(*id))
+                .collect();
+            // Only pull the curve onto surfaces we evaluate exactly. A
+            // BLENDED_EDGE is a reconstruction, not the stored surface (#4),
+            // so snapping to it would move the curve onto a locus that is
+            // itself wrong -- worse than leaving the chart alone.
+            let trusted = nodes.len() == 2
+                && nodes
+                    .iter()
+                    .all(|n| EXACT_SURFACES.contains(&n.name.as_str()));
+            let surfs: Vec<Box<dyn Surface>> = if trusted {
+                nodes
+                    .iter()
+                    .filter_map(|n| super::surfaces::make_surface(graph, n))
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            if surfs.len() == 2 {
+                let mut it = surfs.into_iter();
+                let pair = SurfacePair {
+                    a: it.next().unwrap(),
+                    b: it.next().unwrap(),
+                };
+                // Parasolid records the tolerance it charted to; ask for one
+                // decimal place better, floored so degenerate charts cannot
+                // drive the subdivision forever.
+                let tol = chart
+                    .f64("chordal_error")
+                    .filter(|e| e.is_finite() && *e > 0.0)
+                    .map(|e| e * 0.1)
+                    .unwrap_or(chord_len(&pts) * 1e-4)
+                    .max(1e-12);
+                if let Some(c) = Polyline::refined(pts.clone(), &pair, tol) {
+                    return Some(Box::new(c) as Box<dyn Curve>);
+                }
+            }
             Polyline::new(pts).map(|c| Box::new(c) as Box<dyn Curve>)
         }
         _ => None,
