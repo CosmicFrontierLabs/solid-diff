@@ -1,0 +1,12 @@
+# Pin the toolchain so local and CI lint identically.
+#
+# CI previously tracked floating `stable`, which drifted ahead of the local
+# install: clippy 1.97 rejected code that clippy 1.93 accepted, so a change
+# could pass locally and merge red. rustup reads this file automatically, so
+# both sides now resolve to the same compiler with no version named twice.
+#
+# Bumping it is a normal PR: change the channel, run clippy, fix what the new
+# release found.
+[toolchain]
+channel = "1.97.0"
+components = ["clippy", "rustfmt"]

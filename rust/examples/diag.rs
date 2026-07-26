@@ -139,7 +139,7 @@ fn main() {
         }
         let mut open: HashMap<String, usize> = HashMap::new();
         let mut flip: HashMap<String, usize> = HashMap::new();
-        for (_, us) in users.iter() {
+        for us in users.values() {
             let label = |ti: usize| -> String {
                 mesh.face_ids
                     .get(ti)

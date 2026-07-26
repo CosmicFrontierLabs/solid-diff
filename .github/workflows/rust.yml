@@ -5,7 +5,36 @@ on:
     branches: [main]
   pull_request:
 
+# Three jobs rather than three steps in one, so each is a separately required
+# check and a red mark says which gate failed without opening the log.
+# The toolchain is never named here: rustup reads rust-toolchain.toml at the
+# repo root, so the version lives in exactly one place.
+
 jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show active-toolchain
+      - run: cargo fmt --check
+
+  clippy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+          key: clippy
+      - run: cargo clippy --all-targets -- -D warnings
+
   test:
     runs-on: ubuntu-latest
     defaults:
@@ -13,17 +42,14 @@ jobs:
         working-directory: rust
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
+      - run: rustup show active-toolchain
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust
+          key: test
       # Corpus tests skip themselves when samples/ is absent, but fetching
       # them is cheap and exercises the real parser against real files.
       - name: Fetch sample parts
         run: ../samples/fetch.sh
         continue-on-error: true
-      - run: cargo fmt --check
-      - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test --release
