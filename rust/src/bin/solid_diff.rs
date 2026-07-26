@@ -53,6 +53,33 @@ enum Cmd {
         #[arg(short, long)]
         quiet: bool,
     },
+    /// Compare two revisions of a part and render what changed.
+    ///
+    /// Faces are matched geometrically -- surface type, its parameters, and
+    /// the extent of the boundary -- because SolidWorks' per-face ids do not
+    /// survive an edit. Unchanged material is muted; moved, added and removed
+    /// faces are coloured.
+    #[command(allow_negative_numbers = true)]
+    Diff {
+        /// The older revision.
+        old: PathBuf,
+        /// The newer revision.
+        new: PathBuf,
+        #[arg(short, long, default_value = "diff.png")]
+        out: PathBuf,
+        #[arg(long, default_value_t = -35.0)]
+        az: f64,
+        #[arg(long, default_value_t = 20.0)]
+        el: f64,
+        #[arg(long, default_value_t = 900)]
+        size: u32,
+        /// Match tolerance as a fraction of part size.
+        #[arg(long, default_value_t = 1e-5)]
+        tol_frac: f64,
+        /// Tessellation tolerance in model units.
+        #[arg(long)]
+        tol: Option<f64>,
+    },
     /// Render parts as isometric PNGs (matte point-splat style).
     ///
     /// With one input and a .png output, writes a single transparent render;
@@ -141,6 +168,16 @@ fn main() -> ExitCode {
             stats,
             quiet,
         } => cmd_mesh(&file, obj.as_deref(), stl.as_deref(), tol, stats, quiet),
+        Cmd::Diff {
+            old,
+            new,
+            out,
+            az,
+            el,
+            size,
+            tol_frac,
+            tol,
+        } => cmd_diff(&old, &new, &out, az, el, size, tol_frac, tol),
         Cmd::Iso {
             files,
             out,
@@ -443,4 +480,109 @@ fn cmd_render(
 fn _unused(g: &Graph) {
     let _ = tess::tessellate(g, None);
     let _ = body_graphs(Path::new("/dev/null"));
+}
+
+/// Render two revisions side by side, coloured by what changed.
+#[allow(clippy::too_many_arguments)]
+fn cmd_diff(
+    old: &Path,
+    new: &Path,
+    out: &Path,
+    az: f64,
+    el: f64,
+    size: u32,
+    tol_frac: f64,
+    tol: Option<f64>,
+) -> ExitCode {
+    match diff_inner(old, new, out, az, el, size, tol_frac, tol) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn diff_inner(
+    old: &Path,
+    new: &Path,
+    out: &Path,
+    az: f64,
+    el: f64,
+    size: u32,
+    tol_frac: f64,
+    tol: Option<f64>,
+) -> solid_diff::Result<()> {
+    let g_old = solid_diff::body_graphs(old)?.remove(0).graph;
+    let g_new = solid_diff::body_graphs(new)?.remove(0).graph;
+
+    let d = solid_diff::diff::diff(&g_old, &g_new, tol_frac);
+    println!("{}", d.summary());
+    if d.is_identical() {
+        println!("(no geometric differences found)");
+    }
+
+    let mut m_old = solid_diff::tess::tessellate(&g_old, tol);
+    let mut m_new = solid_diff::tess::tessellate(&g_new, tol);
+    solid_diff::diff::paint(&mut m_old, &d.old);
+    solid_diff::diff::paint(&mut m_new, &d.new);
+
+    // Both sides share one framing so the two renders are comparable: a part
+    // that grew must look bigger, not get re-fitted to the same box.
+    let (alo, ahi) = m_old.bounds();
+    let (blo, bhi) = m_new.bounds();
+    let frame = Some((
+        [alo[0].min(blo[0]), alo[1].min(blo[1]), alo[2].min(blo[2])],
+        [ahi[0].max(bhi[0]), ahi[1].max(bhi[1]), ahi[2].max(bhi[2])],
+    ));
+    let opts = IsoOptions {
+        az,
+        el,
+        size,
+        face_colors: true,
+        frame,
+        ..IsoOptions::default()
+    };
+    let a = solid_diff::iso::render_iso(&m_old, &opts);
+    let b = solid_diff::iso::render_iso(&m_new, &opts);
+
+    let pad = 12usize;
+    let label_h = 34usize;
+    let w = a.w + b.w + pad * 3;
+    let h = a.h + label_h + pad * 2;
+    let mut img = solid_diff::iso::Image::new(w, h, [26, 27, 38, 255]);
+    img.blit(&a, pad, label_h + pad);
+    img.blit(&b, a.w + pad * 2, label_h + pad);
+
+    let name = |p: &Path| {
+        p.file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default()
+    };
+    img.text(pad, pad, &name(old), 2, [150, 160, 190, 255]);
+    img.text(a.w + pad * 2, pad, &name(new), 2, [150, 160, 190, 255]);
+    img.text(pad, pad + 16, &d.summary(), 2, [110, 118, 145, 255]);
+
+    // Legend, in the same colours the faces carry.
+    let mut x = a.w + pad * 2;
+    for c in [
+        solid_diff::diff::Change::Moved,
+        solid_diff::diff::Change::Added,
+        solid_diff::diff::Change::Removed,
+    ] {
+        let rgb = c.color();
+        let col = [
+            (rgb[0] * 255.0) as u8,
+            (rgb[1] * 255.0) as u8,
+            (rgb[2] * 255.0) as u8,
+            255,
+        ];
+        img.text(x, pad + 16, c.label(), 2, col);
+        x += c.label().len() * 12 + 18;
+    }
+
+    img.write_png(out)?;
+    println!("wrote {}", out.display());
+    Ok(())
 }

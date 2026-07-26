@@ -43,6 +43,14 @@ pub struct IsoOptions {
     pub base_color: [u8; 3],
     /// Use each face's own colour (from the file) instead of `base_color`.
     pub face_colors: bool,
+    /// Override the fitted bounding box.
+    ///
+    /// A diff renders two revisions side by side, and each fitting itself
+    /// would rescale them independently -- a part that grew would come out the
+    /// same size on screen as the one it grew from, which is exactly the thing
+    /// the reader is trying to see. Giving both the union of their boxes keeps
+    /// them to one scale.
+    pub frame: Option<([f64; 3], [f64; 3])>,
 }
 
 impl Default for IsoOptions {
@@ -55,6 +63,7 @@ impl Default for IsoOptions {
             margin: 0.06,
             base_color: BASE_COLOR,
             face_colors: false,
+            frame: None,
         }
     }
 }
@@ -253,7 +262,7 @@ pub fn render_iso_scaled(mesh: &Mesh, opts: &IsoOptions) -> (Image, f64) {
     // Fit to the *projected* silhouette rather than the model's axis extents:
     // a shape can be much wider on screen than along any one axis, and
     // normalising by axis extent alone lets corners spill out of frame.
-    let (lo, hi) = mesh.bounds();
+    let (lo, hi) = opts.frame.unwrap_or_else(|| mesh.bounds());
     let centre = [
         (lo[0] + hi[0]) / 2.0,
         (lo[1] + hi[1]) / 2.0,
