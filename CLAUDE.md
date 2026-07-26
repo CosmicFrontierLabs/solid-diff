@@ -35,6 +35,12 @@ CI runs all three. Corpus tests skip themselves when `samples/*.SLDPRT` are
 absent (they are fetched by `samples/fetch.sh`, not committed); vault parts in
 `vault/` are committed.
 
+**CI's clippy is newer than the local one** (1.97 vs 1.93 as of this writing)
+and fails on lints the local toolchain does not know about -- `for_kv_map`
+caught one that had already been merged. A clean local `clippy` is not proof
+CI will pass; if CI reports a lint you cannot reproduce, check the versions
+before doubting the finding.
+
 ### What the tests assert against
 
 There is no recorded reference output anywhere in this repo, on purpose. A
