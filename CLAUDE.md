@@ -35,11 +35,16 @@ CI runs all three. Corpus tests skip themselves when `samples/*.SLDPRT` are
 absent (they are fetched by `samples/fetch.sh`, not committed); vault parts in
 `vault/` are committed.
 
-**CI's clippy is newer than the local one** (1.97 vs 1.93 as of this writing)
-and fails on lints the local toolchain does not know about -- `for_kv_map`
-caught one that had already been merged. A clean local `clippy` is not proof
-CI will pass; if CI reports a lint you cannot reproduce, check the versions
-before doubting the finding.
+The toolchain is pinned in `rust-toolchain.toml` at the repo root, and rustup
+reads it automatically, so local and CI lint with the same compiler. This was
+not always true: CI tracked floating `stable` while the local install sat at
+1.93, and clippy 1.97's `for_kv_map` rejected code that merged clean locally.
+Bumping the pin is a normal PR -- change the channel, run clippy, fix what the
+new release found.
+
+`fmt`, `clippy` and `test` are three separate CI jobs and all three are
+required to merge, so a red check blocks the button rather than relying on
+someone noticing.
 
 ### What the tests assert against
 
