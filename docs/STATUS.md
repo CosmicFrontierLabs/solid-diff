@@ -84,27 +84,42 @@ All tracked as GitHub issues. Summary of what is left, worst first.
 
 ### Correctness
 
-- **[#21] Face-level orientation is the biggest defect class.** On
-  NURBS-heavy parts roughly half of all shared edges have their two triangles
-  wound opposite each other. Corpus total: 10,468 winding mismatches.
-- **[#23] `INTERSECTION` curves miss the surfaces they bound.** They carry no
-  closed form and are interpolated from whatever samples their CHART stores,
-  so 96 of 226 vertex checks land off-curve, worst case **9% of model
-  scale**. Every other curve type is exact to 3e-10. Projecting the samples
-  onto the two surfaces they are the intersection of would fix it.
-- **[#4] `BLENDED_EDGE` reconstruction is wrong, not merely coarse.** Exact
-  CIRCLE boundaries fail to lie on the blend 6/6 times, and the surface is
-  off for 32 of 39 checked points. The negative `range[0]` sign encodes
-  convexity and is currently taken as a magnitude.
-- **[#5] Doubly-periodic faces still guess.** A periodic direction the loops
-  do not cover gets a provably-outside anchor, but faces winding in *both*
-  directions (tori) fall back to a material-left heuristic.
-- **[#3] `SP_CURVE` unimplemented** — 75 edges / 14 files fall back to
-  straight chords.
+- **[#4] `BLENDED_EDGE` keeps a ~0.2r residual on SWEPT_SURF-supported
+  blends.** The arc no longer mirrors across its spine (mean error 0.69r ->
+  0.20r, worst face 1.86r -> 0.04r), but 35 of 39 sampled points still miss
+  the surface by more than tolerance. The rolling-ball model and the radius
+  sign both measured correct; the remaining cause is undiagnosed.
+- **[#5] The material-left fallback fires on degenerate sliver faces**, not
+  tori as originally thought: 235 faces across 400 vault parts, every one a
+  cone whose loop spans nearly a full u period with zero v extent and zero
+  area. Three attempted fixes each left the count at exactly 235.
 - **[#6] Deltas transmits never parse** (extended node types absent from
   schema 13006). Not ignorable: `CVS-22055[TAM]_03202026__00000914_v2` has a
   307-byte stub partition and keeps all 109 kB of its geometry in the deltas
   transmit, so it silently meshes to zero triangles.
+
+Fixed since the last revision of this document:
+
+| | was | now |
+|---|---|---|
+| winding mismatches (corpus) | 10,468 | **54** |
+| holes (corpus) | 4,201 | 4,092 |
+| non-manifold (corpus) | 98 | 25 |
+| INTERSECTION off-surface | 96/226 | **11/226** |
+| worst INTERSECTION error | 9.2e-2 | **3.1e-3** x model scale |
+| SP_CURVE nodes evaluated | 0 | **4,211** |
+
+- **[#21] closed** -- winding is now made consistent across shared edges by
+  flood fill, with the global sign per component decided by majority vote
+  rather than by forcing positive volume, which would invert internal voids.
+- **[#23] closed** -- INTERSECTION curves are refined onto the two surfaces
+  they run along, and `inv` projects onto segments instead of snapping to
+  stored samples.
+- **[#25] closed** -- edges with a null curve are reconstructed by marching
+  along the intersection of the two faces that meet there, cutting holes on
+  the 119 affected parts from 72,349 to 64,396.
+- **[#3] closed** -- SP_CURVE (a B-curve in a surface's parameter space) is
+  implemented.
 
 ### Performance
 
