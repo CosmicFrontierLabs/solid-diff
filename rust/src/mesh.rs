@@ -251,9 +251,16 @@ mod manifold_tests {
         let mut m = tetra();
         m.triangles[3] = [1, 3, 2];
         let r = m.manifold_report();
-        assert_eq!(r.flipped, 3, "3 edges now traversed the same way twice: {r}");
+        assert_eq!(
+            r.flipped, 3,
+            "3 edges now traversed the same way twice: {r}"
+        );
         assert!(!r.is_watertight());
-        assert_eq!(m.boundary_edge_count(), 0, "the naive check calls this closed");
+        assert_eq!(
+            m.boundary_edge_count(),
+            0,
+            "the naive check calls this closed"
+        );
     }
 
     #[test]
