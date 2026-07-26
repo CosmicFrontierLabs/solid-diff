@@ -132,30 +132,63 @@ impl Curve for Ellipse {
 /// point count. All indexing is bounds-clamped so malformed knot vectors
 /// produce garbage rather than a panic.
 pub fn deboor_basis(knots: &[f64], degree: usize, ncp: usize, t: f64) -> (usize, Vec<f64>) {
-    let p = degree;
+    let mut basis = vec![0.0; degree + 1];
+    let span = deboor_basis_into(knots, degree, ncp, t, &mut basis);
+    (span, basis)
+}
+
+/// Largest spline degree evaluated without touching the heap. CAD surfaces are
+/// degree 3 in practice; anything past this falls back to the allocating path.
+pub const MAX_DEGREE: usize = 15;
+
+/// Knot span for `t`, clamped into the range the basis is defined over.
+fn knot_span(knots: &[f64], degree: usize, ncp: usize, t: f64) -> (usize, f64) {
     let n = knots.len();
-    if n == 0 || ncp == 0 {
-        let mut basis = vec![0.0; p + 1];
-        basis[0] = 1.0;
-        return (p, basis);
-    }
     let k = |i: usize| knots[i.min(n - 1)];
-    let t0 = k(p);
+    let t0 = k(degree);
     let t1 = k(ncp);
     // Nudge off the right end so the last span (not the empty one past it) is
     // selected, exactly as the Python does.
     let hi = (t1 - 1e-14 * t1.abs().max(1.0)).max(t0);
     let t = if t.is_finite() { t.clamp(t0, hi) } else { t0 };
-
-    // span = (# knots <= t) - 1, clamped into the valid range.
     let mut span = knots.partition_point(|&x| x <= t).saturating_sub(1);
-    span = span.clamp(p, (ncp - 1).max(p));
-    span = span.min(n.saturating_sub(1));
+    span = span.clamp(degree, (ncp - 1).max(degree));
+    (span.min(n.saturating_sub(1)), t)
+}
 
-    let mut basis = vec![0.0; p + 1];
-    basis[0] = 1.0;
-    let mut left = vec![0.0; p + 1];
-    let mut right = vec![0.0; p + 1];
+/// [`deboor_basis`] writing into a caller-owned slice (`degree + 1` entries).
+///
+/// The allocation-free form matters: surface inversion evaluates the basis
+/// millions of times, and a `Vec` per call dominated the profile.
+pub fn deboor_basis_into(
+    knots: &[f64],
+    degree: usize,
+    ncp: usize,
+    t: f64,
+    out: &mut [f64],
+) -> usize {
+    let p = degree;
+    out[..=p].fill(0.0);
+    out[0] = 1.0;
+    let n = knots.len();
+    if n == 0 || ncp == 0 {
+        return p;
+    }
+    let k = |i: usize| knots[i.min(n - 1)];
+    let (span, t) = knot_span(knots, p, ncp, t);
+
+    let mut left = [0.0f64; MAX_DEGREE + 2];
+    let mut right = [0.0f64; MAX_DEGREE + 2];
+    let mut heap_left;
+    let mut heap_right;
+    let (left, right): (&mut [f64], &mut [f64]) = if p + 2 <= left.len() {
+        (&mut left, &mut right)
+    } else {
+        heap_left = vec![0.0; p + 2];
+        heap_right = vec![0.0; p + 2];
+        (&mut heap_left, &mut heap_right)
+    };
+
     for j in 1..=p {
         left[j] = t - k(span + 1 - j); // span >= p >= j, so this cannot wrap
         right[j] = k(span + j) - t;
@@ -163,16 +196,81 @@ pub fn deboor_basis(knots: &[f64], degree: usize, ncp: usize, t: f64) -> (usize,
         for r in 0..j {
             let denom = right[r + 1] + left[j - r];
             let tmp = if denom.abs() > 0.0 {
-                basis[r] / denom
+                out[r] / denom
             } else {
                 0.0
             };
-            basis[r] = saved + right[r + 1] * tmp;
+            out[r] = saved + right[r + 1] * tmp;
             saved = left[j - r] * tmp;
         }
-        basis[j] = saved;
+        out[j] = saved;
     }
-    (span, basis)
+    span
+}
+
+/// Basis values *and* first derivatives at `t`, in one pass.
+///
+/// Both slices need `degree + 1` entries. Derivatives come from the standard
+/// identity
+/// `N'_{i,p} = p·( N_{i,p-1}/(k_{i+p}−k_i) − N_{i+1,p-1}/(k_{i+p+1}−k_{i+1}) )`,
+/// reusing the degree-(p−1) row the recurrence already computes — so this
+/// costs essentially the same as the value-only version and replaces four
+/// finite-difference evaluations per Newton step.
+pub fn deboor_basis_deriv_into(
+    knots: &[f64],
+    degree: usize,
+    ncp: usize,
+    t: f64,
+    n_out: &mut [f64],
+    d_out: &mut [f64],
+) -> usize {
+    let p = degree;
+    n_out[..=p].fill(0.0);
+    d_out[..=p].fill(0.0);
+    n_out[0] = 1.0;
+    let n = knots.len();
+    if n == 0 || ncp == 0 || p == 0 {
+        return p;
+    }
+    let k = |i: usize| knots[i.min(n - 1)];
+    let (span, t) = knot_span(knots, p, ncp, t);
+
+    let mut left = vec![0.0f64; p + 2];
+    let mut right = vec![0.0f64; p + 2];
+    // Degree p-1 basis functions, saved on the way up: low[r] = N_{span-p+1+r, p-1}.
+    let mut low = vec![0.0f64; p.max(1)];
+
+    for j in 1..=p {
+        if j == p {
+            low[..p].copy_from_slice(&n_out[..p]);
+        }
+        left[j] = t - k(span + 1 - j);
+        right[j] = k(span + j) - t;
+        let mut saved = 0.0;
+        for r in 0..j {
+            let denom = right[r + 1] + left[j - r];
+            let tmp = if denom.abs() > 0.0 {
+                n_out[r] / denom
+            } else {
+                0.0
+            };
+            n_out[r] = saved + right[r + 1] * tmp;
+            saved = left[j - r] * tmp;
+        }
+        n_out[j] = saved;
+    }
+
+    for a in 0..=p {
+        let i = span - p + a; // span >= p, so this cannot wrap
+        let lo = if a >= 1 { low[a - 1] } else { 0.0 };
+        let hi = if a < p { low[a] } else { 0.0 };
+        let d1 = k(i + p) - k(i);
+        let d2 = k(i + p + 1) - k(i + 1);
+        let term1 = if d1 != 0.0 { lo / d1 } else { 0.0 };
+        let term2 = if d2 != 0.0 { hi / d2 } else { 0.0 };
+        d_out[a] = p as f64 * (term1 - term2);
+    }
+    span
 }
 
 /// Expand a knot vector by its multiplicities.

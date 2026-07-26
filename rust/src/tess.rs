@@ -31,6 +31,12 @@ use crate::value::{Node, NodeId};
 const MAX_EDGE_SAMPLES: usize = 1024;
 const MAX_GRID: usize = 96;
 
+/// Per-face cost reporting, enabled with `SOLID_DIFF_TRACE=1`.
+fn trace_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("SOLID_DIFF_TRACE").is_ok_and(|v| v != "0"))
+}
+
 // ── Edge sampling (two-pass, shared across faces) ───────────────────────────
 
 enum EdgeRange {
@@ -289,6 +295,140 @@ struct LoopClassifier {
     anchor_inside: bool,
     /// True when a single heuristic anchor is in use (majority vote off).
     heuristic: bool,
+    /// Uniform-grid index over the segments, in metric-scaled space. Without
+    /// it, classification is O(points x segments), which on a face with tens
+    /// of thousands of boundary samples runs into billions of tests.
+    grid: Option<SegGrid>,
+}
+
+/// Uniform bucket grid over the boundary segments, in metric-scaled space.
+///
+/// A segment is filed under every cell its bounding box touches, so lookups
+/// are conservative (never miss) but may return a segment more than once —
+/// hence the stamp-based dedup in [`SegGrid::for_each_along`].
+struct SegGrid {
+    lo: P2,
+    inv_cell: P2,
+    nx: usize,
+    ny: usize,
+    buckets: Vec<Vec<u32>>,
+    /// Scratch for dedup: last query generation that touched each segment.
+    stamp: std::cell::RefCell<(u32, Vec<u32>)>,
+}
+
+impl SegGrid {
+    /// Build an index if there are enough segments to pay for it.
+    fn build(segs_s: &[[P2; 2]]) -> Option<SegGrid> {
+        const MIN_SEGS: usize = 256;
+        if segs_s.len() < MIN_SEGS {
+            return None;
+        }
+        let (mut lo, mut hi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
+        for s in segs_s {
+            for p in s {
+                for i in 0..2 {
+                    lo[i] = lo[i].min(p[i]);
+                    hi[i] = hi[i].max(p[i]);
+                }
+            }
+        }
+        if !lo[0].is_finite() || !hi[0].is_finite() {
+            return None;
+        }
+        // Aim for a handful of segments per cell.
+        let target = ((segs_s.len() as f64 / 2.0).sqrt().ceil() as usize).clamp(4, 256);
+        let span = [(hi[0] - lo[0]).max(1e-12), (hi[1] - lo[1]).max(1e-12)];
+        let (nx, ny) = (target, target);
+        let inv_cell = [nx as f64 / span[0], ny as f64 / span[1]];
+        let mut buckets = vec![Vec::new(); nx * ny];
+        for (i, s) in segs_s.iter().enumerate() {
+            let (x0, x1) = (s[0][0].min(s[1][0]), s[0][0].max(s[1][0]));
+            let (y0, y1) = (s[0][1].min(s[1][1]), s[0][1].max(s[1][1]));
+            let cx0 = Self::cell(x0, lo[0], inv_cell[0], nx);
+            let cx1 = Self::cell(x1, lo[0], inv_cell[0], nx);
+            let cy0 = Self::cell(y0, lo[1], inv_cell[1], ny);
+            let cy1 = Self::cell(y1, lo[1], inv_cell[1], ny);
+            for cy in cy0..=cy1 {
+                for cx in cx0..=cx1 {
+                    buckets[cy * nx + cx].push(i as u32);
+                }
+            }
+        }
+        Some(SegGrid {
+            lo,
+            inv_cell,
+            nx,
+            ny,
+            buckets,
+            stamp: std::cell::RefCell::new((0, vec![0u32; segs_s.len()])),
+        })
+    }
+
+    #[inline]
+    fn cell(v: f64, lo: f64, inv: f64, n: usize) -> usize {
+        (((v - lo) * inv) as isize).clamp(0, n as isize - 1) as usize
+    }
+
+    /// Visit each segment whose cell the segment `a`→`b` passes through,
+    /// at most once per call.
+    fn for_each_along(&self, a: P2, b: P2, mut f: impl FnMut(u32)) {
+        let mut st = self.stamp.borrow_mut();
+        st.0 = st.0.wrapping_add(1);
+        let gen = st.0;
+        let (_, stamps) = &mut *st;
+        // Walk the cells of the bounding box of a->b, stepping along the line
+        // one row at a time; cheaper than a full DDA and still conservative.
+        let (x0, x1) = (a[0].min(b[0]), a[0].max(b[0]));
+        let (y0, y1) = (a[1].min(b[1]), a[1].max(b[1]));
+        let cy0 = Self::cell(y0, self.lo[1], self.inv_cell[1], self.ny);
+        let cy1 = Self::cell(y1, self.lo[1], self.inv_cell[1], self.ny);
+        let dy = b[1] - a[1];
+        for cy in cy0..=cy1 {
+            // x-range of the line within this row's y-band
+            let (mut rx0, mut rx1) = (x0, x1);
+            if dy.abs() > 1e-300 {
+                let band_lo = self.lo[1] + cy as f64 / self.inv_cell[1];
+                let band_hi = band_lo + 1.0 / self.inv_cell[1];
+                let t_at = |y: f64| ((y - a[1]) / dy).clamp(0.0, 1.0);
+                let (t0, t1) = (t_at(band_lo), t_at(band_hi));
+                let (xa, xb) = (a[0] + t0 * (b[0] - a[0]), a[0] + t1 * (b[0] - a[0]));
+                rx0 = xa.min(xb);
+                rx1 = xa.max(xb);
+            }
+            let cx0 = Self::cell(rx0, self.lo[0], self.inv_cell[0], self.nx);
+            let cx1 = Self::cell(rx1, self.lo[0], self.inv_cell[0], self.nx);
+            for cx in cx0..=cx1 {
+                for &i in &self.buckets[cy * self.nx + cx] {
+                    if stamps[i as usize] != gen {
+                        stamps[i as usize] = gen;
+                        f(i);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Visit each segment within `r` of `q` (conservatively, by cell).
+    fn for_each_near(&self, q: P2, r: f64, mut f: impl FnMut(u32)) {
+        let mut st = self.stamp.borrow_mut();
+        st.0 = st.0.wrapping_add(1);
+        let gen = st.0;
+        let (_, stamps) = &mut *st;
+        let cx0 = Self::cell(q[0] - r, self.lo[0], self.inv_cell[0], self.nx);
+        let cx1 = Self::cell(q[0] + r, self.lo[0], self.inv_cell[0], self.nx);
+        let cy0 = Self::cell(q[1] - r, self.lo[1], self.inv_cell[1], self.ny);
+        let cy1 = Self::cell(q[1] + r, self.lo[1], self.inv_cell[1], self.ny);
+        for cy in cy0..=cy1 {
+            for cx in cx0..=cx1 {
+                for &i in &self.buckets[cy * self.nx + cx] {
+                    if stamps[i as usize] != gen {
+                        stamps[i as usize] = gen;
+                        f(i);
+                    }
+                }
+            }
+        }
+    }
 }
 
 impl LoopClassifier {
@@ -340,12 +480,24 @@ impl LoopClassifier {
             }
         }
 
+        let grid = SegGrid::build(
+            &reps
+                .iter()
+                .map(|s| {
+                    [
+                        [s[0][0] / scale[0], s[0][1] / scale[1]],
+                        [s[1][0] / scale[0], s[1][1] / scale[1]],
+                    ]
+                })
+                .collect::<Vec<_>>(),
+        );
         let mut clf = LoopClassifier {
             segs: reps,
             scale,
             anchors: Vec::new(),
             anchor_inside: false,
             heuristic: false,
+            grid,
         };
 
         if let Some(base) = outside_anchor {
@@ -401,7 +553,7 @@ impl LoopClassifier {
                 ];
                 // the candidate's own segment sits exactly eps away; anything
                 // closer means we may have overshot a thin face
-                if clf.dist_one(cand) > eps * 0.99 {
+                if !clf.within(cand, eps * 0.99) {
                     clf.anchors = vec![cand];
                     break 'outer;
                 }
@@ -416,38 +568,68 @@ impl LoopClassifier {
         clf
     }
 
-    /// Metric-scaled distance to the nearest boundary segment.
-    fn dist_one(&self, q: P2) -> f64 {
-        let mut best = f64::INFINITY;
-        for s in &self.segs {
-            let a = [s[0][0] / self.scale[0], s[0][1] / self.scale[1]];
-            let b = [s[1][0] / self.scale[0], s[1][1] / self.scale[1]];
-            let qq = [q[0] / self.scale[0], q[1] / self.scale[1]];
-            let ab = [b[0] - a[0], b[1] - a[1]];
-            let ab2 = (ab[0] * ab[0] + ab[1] * ab[1]).max(1e-30);
-            let aq = [qq[0] - a[0], qq[1] - a[1]];
-            let t = ((aq[0] * ab[0] + aq[1] * ab[1]) / ab2).clamp(0.0, 1.0);
-            let d = [aq[0] - t * ab[0], aq[1] - t * ab[1]];
-            best = best.min((d[0] * d[0] + d[1] * d[1]).sqrt());
+    #[inline]
+    fn scaled(&self, q: P2) -> P2 {
+        [q[0] / self.scale[0], q[1] / self.scale[1]]
+    }
+
+    /// Metric-scaled distance from `q` to segment `i`.
+    #[inline]
+    fn seg_dist(&self, i: usize, q_s: P2) -> f64 {
+        let s = &self.segs[i];
+        let a = self.scaled(s[0]);
+        let b = self.scaled(s[1]);
+        let ab = [b[0] - a[0], b[1] - a[1]];
+        let ab2 = (ab[0] * ab[0] + ab[1] * ab[1]).max(1e-30);
+        let aq = [q_s[0] - a[0], q_s[1] - a[1]];
+        let t = ((aq[0] * ab[0] + aq[1] * ab[1]) / ab2).clamp(0.0, 1.0);
+        let d = [aq[0] - t * ab[0], aq[1] - t * ab[1]];
+        (d[0] * d[0] + d[1] * d[1]).sqrt()
+    }
+
+    /// Is any boundary segment within `r` (metric-scaled) of `q`?
+    fn within(&self, q: P2, r: f64) -> bool {
+        let q_s = self.scaled(q);
+        if let Some(g) = &self.grid {
+            let mut hit = false;
+            g.for_each_near(q_s, r, |i| {
+                if !hit && self.seg_dist(i as usize, q_s) <= r {
+                    hit = true;
+                }
+            });
+            return hit;
         }
-        best
+        (0..self.segs.len()).any(|i| self.seg_dist(i, q_s) <= r)
     }
 
     fn inside_from(&self, q0: P2, q: P2) -> bool {
         let r = [q[0] - q0[0], q[1] - q0[1]];
         let mut hits = 0u32;
-        for s in &self.segs {
+        let test = |s: &[P2; 2]| -> bool {
             let sd = [s[1][0] - s[0][0], s[1][1] - s[0][1]];
             let denom = r[0] * sd[1] - r[1] * sd[0];
             if denom.abs() <= 1e-30 {
-                continue;
+                return false;
             }
             let qp = [s[0][0] - q0[0], s[0][1] - q0[1]];
             let t = (qp[0] * sd[1] - qp[1] * sd[0]) / denom;
             let u = (qp[0] * r[1] - qp[1] * r[0]) / denom;
             // Half-open in u so a ray through a shared vertex counts once.
-            if t > 0.0 && t < 1.0 && (0.0..1.0).contains(&u) {
-                hits += 1;
+            t > 0.0 && t < 1.0 && (0.0..1.0).contains(&u)
+        };
+        if let Some(g) = &self.grid {
+            // Only segments in cells the anchor->query line passes through can
+            // possibly cross it.
+            g.for_each_along(self.scaled(q0), self.scaled(q), |i| {
+                if test(&self.segs[i as usize]) {
+                    hits += 1;
+                }
+            });
+        } else {
+            for s in &self.segs {
+                if test(s) {
+                    hits += 1;
+                }
             }
         }
         self.anchor_inside ^ (hits & 1 == 1)
@@ -722,7 +904,12 @@ fn tessellate_face(
     warns: &mut Vec<String>,
     dry_run: bool,
 ) -> Option<(Vec<P3>, Vec<[usize; 3]>)> {
+    let t_start = std::time::Instant::now();
+    let tr = trace_enabled() && !dry_run;
     let loops = graph.face_loops(face);
+    if tr {
+        eprintln!("trace face #{} begin ({} loops)", face.id, loops.len());
+    }
     let mut loops3d: Vec<Vec<P3>> = Vec::new();
     for lp in &loops {
         if let Some(pl) = loop_polyline(graph, sampler, lp, warns) {
@@ -730,6 +917,13 @@ fn tessellate_face(
         }
     }
 
+    if tr {
+        let n: usize = loops3d.iter().map(|l| l.len()).sum();
+        eprintln!(
+            "  .. loops sampled: {n} pts  {:.1}ms",
+            t_start.elapsed().as_secs_f64() * 1e3
+        );
+    }
     let surf_node = graph.deref(face, "surface");
     let mut used_shim = false;
     let surf: Box<dyn Surface> = match surf_node.and_then(|n| make_surface(graph, n)) {
@@ -801,6 +995,12 @@ fn tessellate_face(
         return None;
     }
 
+    if tr {
+        eprintln!(
+            "  .. surface + uv inversion done  {:.1}ms",
+            t_start.elapsed().as_secs_f64() * 1e3
+        );
+    }
     let (lo, hi) = face_uv_domain(surf.as_ref(), &loops_uv);
     let mid = [(lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0];
     let mscale = metric_scale(surf.as_ref(), mid);
@@ -911,7 +1111,7 @@ fn tessellate_face(
             }
             // Drop grid points hugging the boundary: a point landing ON a
             // boundary segment between loop samples makes a T-junction.
-            if boundary_count > 0 && clf.dist_one(q) <= 0.45 {
+            if boundary_count > 0 && clf.within(q, 0.45) {
                 continue;
             }
             all_uv.push(q);
@@ -922,6 +1122,20 @@ fn tessellate_face(
     if all_uv.len() < 3 {
         warns.push(format!("face #{}: too few points; skipped", face.id));
         return None;
+    }
+
+    // `SOLID_DIFF_TRACE=1` reports per-face cost, which is how the pathological
+    // parts in the corpus were tracked down.
+    if trace_enabled() {
+        eprintln!(
+            "trace face #{:<5} {:<12} boundary={:<6} grid={:<6} segs={:<6} {:>8.1}ms",
+            face.id,
+            surf_node.map(|n| n.name.as_str()).unwrap_or("?"),
+            boundary_count,
+            all_uv.len() - boundary_count,
+            clf.segs.len(),
+            t_start.elapsed().as_secs_f64() * 1e3,
+        );
     }
 
     let mut tri = DelaunayTriangulation::<DelPt>::new();

@@ -4,7 +4,9 @@
 //! other; anything unsupported returns `None` so the caller can fall back to a
 //! best-fit plane.
 
-use super::curves::{deboor_basis, expand_knots, split_vertices};
+use super::curves::{
+    deboor_basis_deriv_into, deboor_basis_into, expand_knots, split_vertices, MAX_DEGREE,
+};
 use super::{
     add, cross, dist, dot, make_curve, norm, scale, sub, unit, Curve, Surface, P2, P3, TWO_PI,
 };
@@ -603,6 +605,8 @@ pub struct NurbsSurf {
     period_v: Option<f64>,
     seed_uv: Vec<P2>,
     seed_pts: Vec<P3>,
+    /// Control-net diagonal: the length scale inversion converges against.
+    diag: f64,
     sense_sign: f64,
 }
 
@@ -663,8 +667,18 @@ impl NurbsSurf {
             period_v,
             seed_uv: Vec::new(),
             seed_pts: Vec::new(),
+            diag: 1.0,
             sense_sign: 1.0,
         };
+        let mut lo = [f64::INFINITY; 3];
+        let mut hi = [f64::NEG_INFINITY; 3];
+        for c in &s.cp {
+            for i in 0..3 {
+                lo[i] = lo[i].min(c[i]);
+                hi[i] = hi[i].max(c[i]);
+            }
+        }
+        s.diag = norm(sub(hi, lo)).max(1e-12);
         // Dense sample cache for inversion seeding.
         let nus = (4 * nu).max(24);
         let nvs = (4 * nv).max(24);
@@ -693,20 +707,84 @@ impl NurbsSurf {
         };
         [u, v]
     }
+
+    /// Position and both partial derivatives in a single basis evaluation.
+    ///
+    /// For a rational surface `S = A/w`, so by the quotient rule
+    /// `dS/du = (dA/du − (dw/du)·S) / w`.
+    pub fn eval_derivs(&self, uv: P2) -> (P3, P3, P3) {
+        let [u, v] = self.clamp_uv(uv);
+        let mut nu_b = [0.0f64; MAX_DEGREE + 2];
+        let mut du_b = [0.0f64; MAX_DEGREE + 2];
+        let mut nv_b = [0.0f64; MAX_DEGREE + 2];
+        let mut dv_b = [0.0f64; MAX_DEGREE + 2];
+        if self.pu + 1 > nu_b.len() || self.pv + 1 > nv_b.len() {
+            // Absurd degree: fall back to differences rather than misbehave.
+            let h = 1e-6 * (self.u1 - self.u0).max(self.v1 - self.v0);
+            let s = self.eval(uv);
+            let du = scale(sub(self.eval([u + h, v]), self.eval([u - h, v])), 0.5 / h);
+            let dv = scale(sub(self.eval([u, v + h]), self.eval([u, v - h])), 0.5 / h);
+            return (s, du, dv);
+        }
+        let su = deboor_basis_deriv_into(&self.uknots, self.pu, self.nu, u, &mut nu_b, &mut du_b);
+        let sv = deboor_basis_deriv_into(&self.vknots, self.pv, self.nv, v, &mut nv_b, &mut dv_b);
+        let iu0 = su.saturating_sub(self.pu);
+        let iv0 = sv.saturating_sub(self.pv);
+
+        let (mut a, mut au, mut av) = ([0.0; 3], [0.0; 3], [0.0; 3]);
+        let (mut w, mut wu, mut wv) = (0.0, 0.0, 0.0);
+        for x in 0..=self.pu {
+            let iu = (iu0 + x).min(self.nu - 1);
+            for y in 0..=self.pv {
+                let iv = (iv0 + y).min(self.nv - 1);
+                let idx = iu * self.nv + iv;
+                let wij = self.w[idx];
+                let f = nu_b[x] * nv_b[y] * wij;
+                let fu = du_b[x] * nv_b[y] * wij;
+                let fv = nu_b[x] * dv_b[y] * wij;
+                let cp = self.cp[idx];
+                a = add(a, scale(cp, f));
+                au = add(au, scale(cp, fu));
+                av = add(av, scale(cp, fv));
+                w += f;
+                wu += fu;
+                wv += fv;
+            }
+        }
+        if w.abs() < 1e-300 {
+            return (self.cp[0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
+        }
+        let s = scale(a, 1.0 / w);
+        let du = scale(sub(au, scale(s, wu)), 1.0 / w);
+        let dv = scale(sub(av, scale(s, wv)), 1.0 / w);
+        (s, du, dv)
+    }
 }
 
 impl Surface for NurbsSurf {
     fn eval(&self, uv: P2) -> P3 {
         let [u, v] = self.clamp_uv(uv);
-        let (su, bu) = deboor_basis(&self.uknots, self.pu, self.nu, u);
-        let (sv, bv) = deboor_basis(&self.vknots, self.pv, self.nv, v);
+        let mut bu_buf = [0.0f64; MAX_DEGREE + 2];
+        let mut bv_buf = [0.0f64; MAX_DEGREE + 2];
+        let mut bu_heap;
+        let mut bv_heap;
+        let (bu, bv): (&mut [f64], &mut [f64]) = if self.pu < bu_buf.len() && self.pv < bv_buf.len()
+        {
+            (&mut bu_buf, &mut bv_buf)
+        } else {
+            bu_heap = vec![0.0; self.pu + 1];
+            bv_heap = vec![0.0; self.pv + 1];
+            (&mut bu_heap, &mut bv_heap)
+        };
+        let su = deboor_basis_into(&self.uknots, self.pu, self.nu, u, bu);
+        let sv = deboor_basis_into(&self.vknots, self.pv, self.nv, v, bv);
         let iu0 = su.saturating_sub(self.pu);
         let iv0 = sv.saturating_sub(self.pv);
         let mut num = [0.0; 3];
         let mut den = 0.0;
-        for (a, &nu_a) in bu.iter().enumerate() {
+        for (a, &nu_a) in bu.iter().enumerate().take(self.pu + 1) {
             let iu = (iu0 + a).min(self.nu - 1);
-            for (b, &nv_b) in bv.iter().enumerate() {
+            for (b, &nv_b) in bv.iter().enumerate().take(self.pv + 1) {
                 let iv = (iv0 + b).min(self.nv - 1);
                 let idx = iu * self.nv + iv;
                 let wgt = nu_a * nv_b * self.w[idx];
@@ -721,6 +799,11 @@ impl Surface for NurbsSurf {
         }
     }
 
+    fn normal(&self, uv: P2) -> P3 {
+        let (_, du, dv) = self.eval_derivs(uv);
+        unit(cross(du, dv))
+    }
+
     fn inv(&self, p: P3) -> P2 {
         let mut best = 0usize;
         let mut bestd = f64::INFINITY;
@@ -732,17 +815,15 @@ impl Surface for NurbsSurf {
             }
         }
         let mut uv = self.seed_uv[best];
-        let h = 1e-6 * (self.u1 - self.u0).max(self.v1 - self.v0);
-        for _ in 0..25 {
-            let r = sub(self.eval(uv), p);
-            let du = scale(
-                sub(self.eval([uv[0] + h, uv[1]]), self.eval([uv[0] - h, uv[1]])),
-                0.5 / h,
-            );
-            let dv = scale(
-                sub(self.eval([uv[0], uv[1] + h]), self.eval([uv[0], uv[1] - h])),
-                0.5 / h,
-            );
+        // Converged once the residual is negligible against the patch's own
+        // size; without this the loop always ran its full iteration budget.
+        let tol = 1e-12 * self.diag.max(1e-12);
+        for _ in 0..12 {
+            let (s, du, dv) = self.eval_derivs(uv);
+            let r = sub(s, p);
+            if dot(r, r) <= tol * tol {
+                break;
+            }
             // Normal equations for the 2x2 Gauss-Newton step.
             let (a, b, c) = (dot(du, du), dot(du, dv), dot(dv, dv));
             let det = a * c - b * b;
