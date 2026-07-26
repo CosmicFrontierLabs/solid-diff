@@ -1544,6 +1544,9 @@ pub fn tessellate(graph: &Graph, tol: Option<f64>) -> Mesh {
             }
         }
     }
+    // Per-face winding is only a seed; make the pieces agree with each
+    // other and face outwards (#21).
+    mesh.orient();
     mesh
 }
 
