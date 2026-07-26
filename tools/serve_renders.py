@@ -60,6 +60,7 @@ FLAGS_LOCK = threading.Lock()
 STATS: dict[str, str] = {}
 POOL: ThreadPoolExecutor | None = None
 INFLIGHT: set[int] = set()
+PREFETCH = 5
 
 
 def human(n: float) -> str:
@@ -258,9 +259,11 @@ def render_part(i: int) -> Path | None:
     return out
 
 
-def prefetch(around: int, n: int = 3) -> None:
+def prefetch(around: int, n: int | None = None) -> None:
+    """Warm the next few parts so paging does not wait on a render."""
     if POOL is None:
         return
+    n = PREFETCH if n is None else n
     for j in range(around + 1, min(around + 1 + n, len(PARTS))):
         if j in INFLIGHT or part_png(j).exists():
             continue
@@ -299,12 +302,17 @@ REVIEW_CSS = """
 REVIEW_JS = """
 const N = %(n)d;
 let i = %(i)d, flags = %(flags)s;
+// Unsaved note text, keyed by part name. A note on an unflagged part has
+// nowhere to live server-side, so it is held here until the part is flagged --
+// and either way the box is only ever rewritten when we move to a new part.
+const drafts = {};
+let shown = null;
 const img=document.getElementById('img'), nm=document.getElementById('nm'),
       st=document.getElementById('st'), pos=document.getElementById('pos'),
       fb=document.getElementById('flagbtn'), note=document.getElementById('note'),
       cnt=document.getElementById('count');
 
-function paint(meta){
+function paint(meta, navigated){
   nm.textContent = meta.name;
   st.textContent = meta.stat;
   pos.textContent = `${i+1} / ${N}`;
@@ -312,33 +320,41 @@ function paint(meta){
   fb.classList.toggle('on', on);
   fb.textContent = on ? 'flagged (F)' : 'flag (F)';
   img.classList.toggle('flagged', on);
-  note.value = on ? (flags[meta.name].note || '') : '';
+  if(navigated){
+    shown = meta.name;
+    const saved = on ? (flags[meta.name].note || '') : '';
+    note.value = saved || drafts[meta.name] || '';
+  }
   cnt.textContent = Object.keys(flags).length + ' flagged';
   history.replaceState(null,'','/review/'+i);
 }
 async function go(d){
   const t = i + d;
   if(t < 0 || t >= N) return;
+  if(shown) drafts[shown] = note.value;   // keep the draft when leaving
   i = t;
   st.textContent = 'rendering...'; st.className='spin';
   img.src = '/review/img/' + i + '.png';
-  const r = await fetch('/review/meta/' + i);
-  const meta = await r.json();
+  const meta = await (await fetch('/review/meta/' + i)).json();
   st.className='';
-  paint(meta);
+  paint(meta, true);
 }
 async function post(action){
   const r = await fetch('/review/flag/' + i, {method:'POST',
     headers:{'Content-Type':'application/json'},
     body: JSON.stringify({action: action, note: note.value})});
   flags = (await r.json()).flags;
-  paint(await (await fetch('/review/meta/' + i)).json());
+  // navigated=false: repainting must never touch the box under the cursor.
+  paint(await (await fetch('/review/meta/' + i)).json(), false);
 }
 const toggleFlag = () => post('toggle');
 let noteTimer;
 note.addEventListener('input', () => {
+  if(shown) drafts[shown] = note.value;
   clearTimeout(noteTimer);
-  noteTimer = setTimeout(() => post('note'), 400);
+  // Only worth a round trip once the part is flagged; otherwise the draft
+  // waits here and rides along when F is pressed.
+  if(shown && flags[shown]) noteTimer = setTimeout(() => post('note'), 400);
 });
 document.getElementById('prev').onclick = () => go(-1);
 document.getElementById('next').onclick = () => go(1);
@@ -366,7 +382,7 @@ def review_page(i: int) -> bytes:
     <span id=pos></span>
     <button id=next>next &rarr;</button>
     <button id=flagbtn>flag (F)</button>
-    <input id=note placeholder="optional note (what looks wrong?)">
+    <input id=note placeholder="what looks wrong? (press F to flag with this note)">
     <a href="/review/report">report</a>
     <span id=count></span>
   </div>
@@ -764,7 +780,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    global ROOT, PARTS, BIN, CACHE, POOL, PART_PX
+    global ROOT, PARTS, BIN, CACHE, POOL, PART_PX, PREFETCH
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--root", default="renders", type=Path)
     ap.add_argument("--port", type=int, default=8791)
@@ -775,7 +791,10 @@ def main():
     ap.add_argument("--bin", type=Path, default=BIN, help="solid-diff binary")
     ap.add_argument("--cache", type=Path, default=None, help="render cache dir")
     ap.add_argument("--size", type=int, default=PART_PX, help="review render px")
-    ap.add_argument("--jobs", type=int, default=3, help="background prefetch workers")
+    ap.add_argument("--jobs", type=int, default=4, help="background prefetch workers")
+    ap.add_argument(
+        "--prefetch", type=int, default=PREFETCH, help="parts to render ahead"
+    )
     args = ap.parse_args()
 
     ROOT = args.root.resolve()
@@ -789,6 +808,7 @@ def main():
         if not BIN.is_file():
             sys.exit(f"solid-diff binary not found: {BIN}  (pass --bin)")
         PART_PX = args.size
+        PREFETCH = args.prefetch
         CACHE = (args.cache or ROOT / ".review-cache").resolve()
         PARTS = sorted(args.parts.rglob("*.SLDPRT"), key=lambda p: p.name.lower())
         if not PARTS:
@@ -797,7 +817,8 @@ def main():
         POOL = ThreadPoolExecutor(max_workers=args.jobs)
         print(
             f"review: {len(PARTS)} parts from {args.parts} "
-            f"({len(FLAGS)} already flagged), cache {CACHE}"
+            f"({len(FLAGS)} already flagged), {PREFETCH} rendered ahead "
+            f"on {args.jobs} workers, cache {CACHE}"
         )
 
     srv = Server((args.bind, args.port), Handler)
