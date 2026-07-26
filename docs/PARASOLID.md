@@ -34,10 +34,11 @@ solid-diff mesh    samples/part.SLDPRT -o part.obj --stats
 ```
 
 All 4/4 sample partitions parsed cleanly (127–540 nodes each), including
-NURBS curve geometry. SolidWorks per-face attributes survive, notably
-`SDL/TYSA_COLOUR` (face RGB) and stable `FACE_ID_2001` ids — the latter is
-gold for diffing, since faces can be identity-matched across revisions
-instead of geometrically matched.
+NURBS curve geometry. SolidWorks per-face attributes survive, notably `SDL/TYSA_COLOUR` (face RGB)
+and `FACE_ID_2001`. The latter is a feature-provenance chain rather than a
+face identity: its leading entries are a feature id and creation timestamp
+shared by every face that feature made, and measurement across real vault
+revisions shows it does not carry a face from one revision to the next.
 
 ## Where the geometry lives
 

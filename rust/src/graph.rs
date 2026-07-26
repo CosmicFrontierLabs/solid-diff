@@ -121,19 +121,32 @@ impl Graph {
 
     /// Stable per-face identifier (`FACE_ID_2001`) used to match faces across
     /// revisions when diffing.
-    pub fn face_stable_id(&self, face: &Node) -> Option<i64> {
+    pub fn face_stable_id(&self, face: &Node) -> Option<u64> {
+        // SolidWorks writes FACE_ID as a tuple across several arrays, e.g.
+        //   [[74, 40, 1691443809, 0, 13], [-18, 1]]
+        // where the leading entries (a feature id and what looks like a
+        // creation timestamp) are shared by every face of the same feature and
+        // only the later components identify the face. Returning the first
+        // element, as this used to, handed back that shared prefix: a part
+        // with 132 faces produced 6 distinct "ids", which is useless for
+        // matching faces between revisions. Hash the whole tuple instead.
+        let mut acc: Option<u64> = None;
         for att in self.attributes(face) {
-            if att.name.starts_with("FACE_ID") {
-                for v in &att.values {
-                    if let Some(ids) = v.as_i64_vec() {
-                        if let Some(first) = ids.first() {
-                            return Some(*first);
-                        }
+            if !att.name.starts_with("FACE_ID") {
+                continue;
+            }
+            let mut h: u64 = 0xcbf29ce484222325;
+            for v in &att.values {
+                for id in v.as_i64_vec().unwrap_or_default() {
+                    for b in id.to_le_bytes() {
+                        h ^= b as u64;
+                        h = h.wrapping_mul(0x100000001b3);
                     }
                 }
             }
+            acc = Some(h);
         }
-        None
+        acc
     }
 
     /// Size of the actual solid, used to pick a default tessellation
