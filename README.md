@@ -13,7 +13,12 @@ Windows and no commercial SDK**: chunk container → Parasolid B-rep →
 tessellation → OBJ/STL/SVG. On the full 1536-part vault export, 98.9% of
 files parse and mesh; the rest are pre-2015 OLE2 containers.
 
-The diff renderer itself is the remaining piece ([#11]).
+`solid-diff diff` compares two revisions and colours what changed: unchanged
+material muted, moved amber, added green, removed red, both sides rendered to
+one shared scale. Faces are matched geometrically -- by surface type, that
+surface's parameters and the extent of the boundary -- because SolidWorks'
+per-face ids turn out to be a feature-provenance chain that no face survives
+an edit with.
 
 Everything lives in the Rust crate under `rust/`. The tests assert invariants
 the part files state about themselves rather than any recorded reference
@@ -30,6 +35,7 @@ $R extract part.SLDPRT -o out/          # carve embedded .x_b transmits
 $R mesh    part.SLDPRT -o part.obj --stl part.stl --stats
 $R render  *.SLDPRT -o sheet.svg --size 360     # translucent x-ray SVG
 $R iso     *.SLDPRT -o sheet.png --size 420     # matte isometric PNG
+$R diff    old.SLDPRT new.SLDPRT -o diff.png    # what changed between revisions
 ```
 
 Two rendering styles, for different jobs:

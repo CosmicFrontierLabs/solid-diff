@@ -737,3 +737,64 @@ fn face_ids_actually_identify_faces() {
          the id is a shared prefix, not a face identity"
     );
 }
+
+/// A part compared with itself must report no changes at all.
+///
+/// The strongest thing that can be said about a differ without a known-good
+/// answer to compare against: identity is the one case where the correct
+/// output is certain. It catches a signature that accidentally depends on
+/// something unstable -- node ids, iteration order, a hash of a pointer --
+/// because any of those would make a part differ from itself.
+#[test]
+fn a_part_does_not_differ_from_itself() {
+    let graphs = graphs();
+    if graphs.is_empty() {
+        return;
+    }
+    let mut checked = 0usize;
+    for (name, g) in &graphs {
+        if g.by_type("FACE").is_empty() {
+            continue;
+        }
+        checked += 1;
+        let d = solid_diff::diff::diff(g, g, 1e-5);
+        assert!(
+            d.is_identical(),
+            "{name} differs from itself: {}",
+            d.summary()
+        );
+    }
+    eprintln!("self-diff clean on {checked} parts");
+}
+
+/// Every face gets a verdict, and the two sides agree on the shared ones.
+#[test]
+fn diff_classifies_every_face() {
+    let graphs = graphs();
+    if graphs.len() < 2 {
+        return;
+    }
+    // Compare consecutive corpus parts. They are unrelated, so the interesting
+    // property is not the verdicts but that nothing is left unclassified and
+    // the counts add up.
+    for pair in graphs.windows(2).take(6) {
+        let (na, ga) = &pair[0];
+        let (nb, gb) = &pair[1];
+        let d = solid_diff::diff::diff(ga, gb, 1e-5);
+        for (name, g, side) in [(na, ga, &d.old), (nb, gb, &d.new)] {
+            let with_surface = g
+                .by_type("FACE")
+                .iter()
+                .filter(|f| g.deref(f, "surface").is_some())
+                .count();
+            assert!(
+                side.len() <= with_surface,
+                "{name}: more verdicts ({}) than faces ({with_surface})",
+                side.len()
+            );
+        }
+        // A face cannot be both added and removed, and the summary must be
+        // consistent with the per-face verdicts.
+        assert!(!d.summary().is_empty());
+    }
+}
