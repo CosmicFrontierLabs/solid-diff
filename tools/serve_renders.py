@@ -61,6 +61,8 @@ STATS: dict[str, str] = {}
 POOL: ThreadPoolExecutor | None = None
 INFLIGHT: set[int] = set()
 PREFETCH = 5
+FAILED: dict[int, str] = {}
+WARMED = 0
 
 
 def human(n: float) -> str:
@@ -228,22 +230,36 @@ def part_png(i: int) -> Path:
     return CACHE / f"{safe}.{stamp}.{PART_PX}.png"
 
 
+# A part that cannot be rendered must fail fast and stay failed. Retrying a
+# slow or hanging part on every visit is what makes the viewer feel stuck.
+RENDER_TIMEOUT = 180
+STATS_TIMEOUT = 180
+
+
 def render_part(i: int) -> Path | None:
     """Render part i if not already cached. Also captures --stats output."""
     out = part_png(i)
     name = PARTS[i].name
     if out.exists() and name in STATS:
         return out
+    if i in FAILED:
+        return None
     CACHE.mkdir(parents=True, exist_ok=True)
     if not out.exists():
-        r = subprocess.run(
-            [str(BIN), "iso", str(PARTS[i]), "-o", str(out), "--size", str(PART_PX)],
-            capture_output=True,
-            text=True,
-            timeout=600,
-        )
+        try:
+            r = subprocess.run(
+                [str(BIN), "iso", str(PARTS[i]), "-o", str(out), "--size", str(PART_PX)],
+                capture_output=True,
+                text=True,
+                timeout=RENDER_TIMEOUT,
+            )
+        except (subprocess.TimeoutExpired, OSError) as e:
+            FAILED[i] = f"render timed out after {RENDER_TIMEOUT}s ({e.__class__.__name__})"
+            STATS[name] = FAILED[i]
+            return None
         if r.returncode != 0 or not out.exists():
-            STATS[name] = f"render failed: {(r.stderr or r.stdout).strip()[:400]}"
+            FAILED[i] = f"render failed: {(r.stderr or r.stdout).strip()[:300]}"
+            STATS[name] = FAILED[i]
             return None
     if name not in STATS:
         try:
@@ -251,12 +267,33 @@ def render_part(i: int) -> Path | None:
                 [str(BIN), "mesh", str(PARTS[i]), "-o", os.devnull, "--stats"],
                 capture_output=True,
                 text=True,
-                timeout=900,
+                timeout=STATS_TIMEOUT,
             )
             STATS[name] = (r.stdout + r.stderr).strip() or "(no stats)"
         except (subprocess.TimeoutExpired, OSError) as e:
-            STATS[name] = f"stats failed: {e}"
+            STATS[name] = f"stats unavailable: {e.__class__.__name__}"
     return out
+
+
+def warm_all() -> None:
+    """Render the whole corpus in the background, in order."""
+    global WARMED
+    if POOL is None:
+        return
+
+    def one(k: int) -> None:
+        global WARMED
+        try:
+            render_part(k)
+        finally:
+            WARMED += 1
+            if WARMED % 100 == 0 or WARMED == len(PARTS):
+                sys.stderr.write(
+                    f"  warmed {WARMED}/{len(PARTS)} ({len(FAILED)} failed)\n"
+                )
+
+    for k in range(len(PARTS)):
+        POOL.submit(one, k)
 
 
 def prefetch(around: int, n: int | None = None) -> None:
@@ -285,6 +322,7 @@ REVIEW_CSS = """
 #img{max-width:min(92vw,900px);max-height:70vh;object-fit:contain;
      background:#12131c;border:1px solid #2f3550;border-radius:10px}
 #img.flagged{border-color:#f7768e;box-shadow:0 0 0 3px #f7768e33}
+#img.failed{min-width:320px;min-height:200px;border-style:dashed;border-color:#565f89}
 #nm{font-size:15px;color:#c0caf5;word-break:break-all;text-align:center;max-width:92vw}
 #st{font-size:12px;color:#565f89;font-variant-numeric:tabular-nums;text-align:center}
 #bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;justify-content:center}
@@ -320,12 +358,15 @@ function paint(meta, navigated){
   fb.classList.toggle('on', on);
   fb.textContent = on ? 'flagged (F)' : 'flag (F)';
   img.classList.toggle('flagged', on);
+  nm.dataset.err = meta.error || '';
   if(navigated){
     shown = meta.name;
     const saved = on ? (flags[meta.name].note || '') : '';
     note.value = saved || drafts[meta.name] || '';
   }
-  cnt.textContent = Object.keys(flags).length + ' flagged';
+  const warm = (meta.warmed && meta.warmed < meta.total)
+      ? ` \u00b7 prerendering ${meta.warmed}/${meta.total}` : '';
+  cnt.textContent = Object.keys(flags).length + ' flagged' + warm;
   history.replaceState(null,'','/review/'+i);
 }
 async function go(d){
@@ -333,12 +374,24 @@ async function go(d){
   if(t < 0 || t >= N) return;
   if(shown) drafts[shown] = note.value;   // keep the draft when leaving
   i = t;
-  st.textContent = 'rendering...'; st.className='spin';
+  // Move the position marker before anything can await, so a part that fails
+  // to render never leaves the viewer looking stuck on the previous one.
+  pos.textContent = `${i+1} / ${N}`;
+  st.textContent = 'rendering...'; st.className = 'spin';
+  img.classList.remove('failed');
   img.src = '/review/img/' + i + '.png';
   const meta = await (await fetch('/review/meta/' + i)).json();
-  st.className='';
+  if(meta.i !== i) return;   // a faster key press already moved us on
+  st.className = '';
   paint(meta, true);
 }
+img.addEventListener('error', () => {
+  // 500 from the renderer: keep the caption, show that it failed, stay movable.
+  img.removeAttribute('src');
+  img.classList.add('failed');
+  st.className = '';
+  st.textContent = 'no render - ' + (nm.dataset.err || 'this part did not render');
+});
 async function post(action){
   const r = await fetch('/review/flag/' + i, {method:'POST',
     headers:{'Content-Type':'application/json'},
@@ -650,6 +703,9 @@ class Handler(BaseHTTPRequestHandler):
                     "path": str(part),
                     "stat": stat_line(part.name),
                     "flagged": flagged,
+                    "error": FAILED.get(i, ""),
+                    "warmed": WARMED,
+                    "total": len(PARTS),
                 }
             )
         i = 0
@@ -833,7 +889,12 @@ def main():
     ap.add_argument("--bin", type=Path, default=BIN, help="solid-diff binary")
     ap.add_argument("--cache", type=Path, default=None, help="render cache dir")
     ap.add_argument("--size", type=int, default=PART_PX, help="review render px")
-    ap.add_argument("--jobs", type=int, default=4, help="background prefetch workers")
+    ap.add_argument("--jobs", type=int, default=4, help="background render workers")
+    ap.add_argument(
+        "--warm",
+        action="store_true",
+        help="render the whole corpus up front, in the background",
+    )
     ap.add_argument(
         "--prefetch", type=int, default=PREFETCH, help="parts to render ahead"
     )
@@ -857,6 +918,8 @@ def main():
             sys.exit(f"no .SLDPRT under {args.parts}")
         load_flags()
         POOL = ThreadPoolExecutor(max_workers=args.jobs)
+        if args.warm:
+            threading.Thread(target=warm_all, daemon=True).start()
         print(
             f"review: {len(PARTS)} parts from {args.parts} "
             f"({len(FLAGS)} already flagged), {PREFETCH} rendered ahead "
