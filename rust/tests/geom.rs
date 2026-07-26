@@ -617,8 +617,8 @@ fn spun_surf_line_profile_is_a_cylinder() {
 }
 
 #[test]
-fn spun_surf_accepts_python_field_names() {
-    // solid_diff/geom.py reads `section`/`pvec`; the 13006 schema says
+fn spun_surf_accepts_both_field_spellings() {
+    // Some files spell these `section`/`pvec`; the 13006 schema says
     // `profile`/`base`. Both must work.
     let nodes = vec![
         node(

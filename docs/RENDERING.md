@@ -40,7 +40,7 @@ Reusable pieces (paths are into `coast-sim-orbit-visualizer`):
      (`preserveDrawingBuffer: true` or render-to-`WebGLRenderTarget` +
      `readRenderTargetPixels`), or
    - **headless-gl** with three.js in Node, or
-   - a native offscreen renderer (e.g. Python: `trimesh`/`pyrender` with EGL,
+   - a native offscreen renderer (e.g. `trimesh`/`pyrender` with EGL,
      or Rust: `rend3`/`wgpu`) if we drop the three.js reuse.
 
 ## Diff-rendering sketch

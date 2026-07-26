@@ -15,10 +15,10 @@ files parse and mesh; the rest are pre-2015 OLE2 containers.
 
 The diff renderer itself is the remaining piece ([#11]).
 
-Everything lives in the Rust crate under `rust/`. A Python prototype proved
-the format first and served as the cross-check oracle while the port was
-built; it has since been removed, but the golden files it produced are kept
-under `rust/tests/data/` as frozen ground truth. See
+Everything lives in the Rust crate under `rust/`. The tests assert invariants
+the part files state about themselves rather than any recorded reference
+output — see `rust/tests/invariants.rs`. For coverage numbers and every known
+gap, see
 [`docs/STATUS.md`](docs/STATUS.md) for coverage numbers and every known gap.
 
 ```sh

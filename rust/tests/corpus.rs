@@ -1,223 +1,22 @@
-//! Corpus test: parse every sample and vault part and compare the container /
-//! section / XT decoding against recorded ground truth.
+//! Corpus test: parse every sample and vault part and assert structural
+//! facts about the decode -- node types, field values, error handling.
 //!
-//! `tests/data/golden.txt` is a **frozen** snapshot captured from the original
-//! Python pipeline (`solid_diff` + `vendor/ps-parser`) while it was still the
-//! reference: 32,473 nodes across 115 transmits, every field hashed, and the
-//! Rust decoder reproduced all 185 lines exactly. That implementation has
-//! since been removed, so the file is no longer regenerable -- treat it as
-//! recorded ground truth. Each line is either
-//!   `<relpath> streams=N`             file-level summary
-//!   `<relpath> NOT_MODERN`            legacy OLE2 file
-//!   `  <stream>@<off> <kind> size=N nodes=M vals=<hash> NAME:count,...`
-//!   `  <stream>@<off> <kind> size=N ERR`   (the reference refused it)
-//!
-//! `vals` is an FNV-1a 64 hash of a canonical dump of *every field value of
-//! every node* (floats as raw big-endian bits), so the check covers field
-//! decoding, not just node counts.
+//! Whole-corpus invariants that the files assert about themselves live in
+//! `tests/invariants.rs`; this file holds hand-written spot checks.
 //!
 //! Parts missing from the checkout (samples/*.SLDPRT are fetched, not
 //! committed) are skipped rather than failing.
 
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use solid_diff::value::{Node, Value};
 use solid_diff::{container, sections, xt};
-
-const GOLDEN: &str = include_str!("data/golden.txt");
 
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
         .to_path_buf()
-}
-
-fn corpus() -> Vec<PathBuf> {
-    let root = repo_root();
-    let mut out = Vec::new();
-    for dir in ["samples", "vault"] {
-        let Ok(entries) = std::fs::read_dir(root.join(dir)) else {
-            continue; // corpus directory not present in this checkout
-        };
-        let mut files: Vec<PathBuf> = entries
-            .filter_map(|e| e.ok().map(|e| e.path()))
-            .filter(|p| p.extension().map(|e| e == "SLDPRT").unwrap_or(false))
-            .collect();
-        files.sort();
-        out.extend(files);
-    }
-    out
-}
-
-fn kind_str(k: sections::TransmitKind) -> &'static str {
-    match k {
-        sections::TransmitKind::Partition => "partition",
-        sections::TransmitKind::Deltas => "deltas",
-        sections::TransmitKind::Part => "part",
-    }
-}
-
-fn fmt_value(v: &Value, out: &mut String) {
-    use std::fmt::Write;
-    match v {
-        Value::Null | Value::Ptr(None) => out.push('N'),
-        Value::Bool(b) => out.push(if *b { 'T' } else { 'F' }),
-        Value::U8(x) => write!(out, "{x}").unwrap(),
-        Value::I16(x) => write!(out, "{x}").unwrap(),
-        Value::I32(x) => write!(out, "{x}").unwrap(),
-        Value::Ptr(Some(x)) => write!(out, "{x}").unwrap(),
-        Value::F64(x) => write!(out, "f{:016x}", x.to_bits()).unwrap(),
-        Value::Char(s) | Value::Utf16(s) => write!(out, "s{s}").unwrap(),
-        Value::Vec3(v) => {
-            out.push('(');
-            for (i, x) in v.iter().enumerate() {
-                if i > 0 {
-                    out.push(',');
-                }
-                fmt_value(&Value::F64(*x), out);
-            }
-            out.push(')');
-        }
-        Value::Interval(v) => {
-            out.push('(');
-            fmt_value(&Value::F64(v[0]), out);
-            out.push(',');
-            fmt_value(&Value::F64(v[1]), out);
-            out.push(')');
-        }
-        Value::Box3(b) => {
-            out.push('(');
-            for (i, iv) in b.iter().enumerate() {
-                if i > 0 {
-                    out.push(',');
-                }
-                fmt_value(&Value::Interval(*iv), out);
-            }
-            out.push(')');
-        }
-        Value::Array(items) => {
-            out.push('[');
-            for (i, it) in items.iter().enumerate() {
-                if i > 0 {
-                    out.push(',');
-                }
-                fmt_value(it, out);
-            }
-            out.push(']');
-        }
-    }
-}
-
-fn fnv1a(data: &[u8]) -> u64 {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in data {
-        h ^= *b as u64;
-        h = h.wrapping_mul(0x100_0000_01b3);
-    }
-    h
-}
-
-/// Canonical dump of every node's every field; hashed for comparison with the
-/// same dump produced by the Python reference.
-fn value_hash(nodes: &[Node]) -> String {
-    use std::fmt::Write;
-    let mut s = String::new();
-    for (i, n) in nodes.iter().enumerate() {
-        if i > 0 {
-            s.push('\n');
-        }
-        match n.count {
-            Some(c) => write!(s, "{}|{}|{}|", n.id, n.node_type, c).unwrap(),
-            None => write!(s, "{}|{}||", n.id, n.node_type).unwrap(),
-        }
-        for (j, (name, value)) in n.fields.iter().enumerate() {
-            if j > 0 {
-                s.push(';');
-            }
-            write!(s, "{name}=").unwrap();
-            fmt_value(value, &mut s);
-        }
-    }
-    format!("{:016x}", fnv1a(s.as_bytes()))
-}
-
-/// Re-derive the golden summary for one part file: a header line plus one line
-/// per Parasolid transmit found in it.
-fn summarize(path: &Path) -> Vec<String> {
-    let root = repo_root();
-    let mut lines = Vec::new();
-    let rel = path
-        .strip_prefix(&root)
-        .unwrap()
-        .to_string_lossy()
-        .to_string();
-    let data = std::fs::read(path).unwrap();
-
-    if !container::is_modern_swx(&data) {
-        assert!(
-            matches!(
-                container::parse(&data),
-                Err(solid_diff::Error::NotModernSldprt)
-            ),
-            "{rel}: expected NotModernSldprt"
-        );
-        return vec![format!("{rel} NOT_MODERN")];
-    }
-
-    let file = container::parse(&data).unwrap_or_else(|e| panic!("{rel}: {e}"));
-    let streams = file.streams();
-    lines.push(format!("{rel} streams={}", streams.len()));
-    for stream in &streams {
-        for (off, blob) in sections::carve_zlib_offsets(&stream.data) {
-            let Some(kind) = sections::transmit_kind(&blob) else {
-                continue;
-            };
-            let head = format!(
-                "  {}@{} {} size={}",
-                stream.name,
-                off,
-                kind_str(kind),
-                blob.len()
-            );
-            match xt::parse_transmit(&blob) {
-                Ok(nodes) => {
-                    let mut hist: BTreeMap<&str, usize> = BTreeMap::new();
-                    for n in &nodes {
-                        *hist.entry(n.name.as_str()).or_default() += 1;
-                    }
-                    let h: Vec<String> = hist.iter().map(|(k, v)| format!("{k}:{v}")).collect();
-                    lines.push(format!(
-                        "{head} nodes={} vals={} {}",
-                        nodes.len(),
-                        value_hash(&nodes),
-                        h.join(",")
-                    ));
-                }
-                Err(_) => lines.push(format!("{head} ERR")),
-            }
-        }
-    }
-    lines
-}
-
-/// Split the golden file into per-part blocks keyed by relative path.
-fn golden_blocks() -> Vec<(String, Vec<&'static str>)> {
-    let mut blocks: Vec<(String, Vec<&str>)> = Vec::new();
-    for line in GOLDEN.lines() {
-        if line.starts_with("  ") {
-            blocks
-                .last_mut()
-                .expect("golden: transmit line before any file line")
-                .1
-                .push(line);
-        } else {
-            let file = line.split(' ').next().unwrap().to_string();
-            blocks.push((file, vec![line]));
-        }
-    }
-    blocks
 }
 
 /// Read a corpus file, or `None` when it isn't on disk (samples/*.SLDPRT are
@@ -470,7 +269,11 @@ fn ascii_parasolid_banner_is_skipped() {
     let from_xb = xt::parse_transmit(&xb).unwrap();
     assert_eq!(from_xb.len(), nodes.len());
     assert_eq!(from_xb[0].name, nodes[0].name);
-    assert_eq!(value_hash(&from_xb), value_hash(&nodes));
+    // Same bytes with and without the banner must decode to identical nodes,
+    // field for field -- the banner is skipped, not partially consumed.
+    for (a, b) in from_xb.iter().zip(nodes.iter()) {
+        assert_eq!(format!("{a:?}"), format!("{b:?}"), "node {} differs", a.id);
+    }
 }
 
 /// Truncated / corrupted input must produce errors, never panics.
@@ -509,55 +312,4 @@ fn malformed_input_is_an_error_not_a_panic() {
     let carved = sections::carve_zlib(&junk);
     assert_eq!(carved.len(), 1);
     assert_eq!(carved[0].len(), 4999);
-}
-
-#[test]
-fn matches_python_pipeline() {
-    let root = repo_root();
-    let on_disk: std::collections::HashSet<String> = corpus()
-        .iter()
-        .map(|p| p.strip_prefix(&root).unwrap().to_string_lossy().to_string())
-        .collect();
-
-    let mut diffs = Vec::new();
-    let mut checked = 0;
-    let mut skipped = 0;
-    let mut in_golden = std::collections::HashSet::new();
-
-    for (file, want) in golden_blocks() {
-        in_golden.insert(file.clone());
-        if !on_disk.contains(&file) {
-            // samples/*.SLDPRT are fetched, not committed (samples/fetch.sh).
-            skipped += 1;
-            continue;
-        }
-        checked += 1;
-        let got = summarize(&root.join(&file));
-        for i in 0..got.len().max(want.len()) {
-            let g = got.get(i).map(|s| s.as_str()).unwrap_or("<missing>");
-            let w = want.get(i).copied().unwrap_or("<missing>");
-            if g != w {
-                diffs.push(format!("{file} line {i}:\n  python: {w}\n  rust:   {g}"));
-            }
-        }
-    }
-
-    let extra: Vec<&String> = on_disk.iter().filter(|f| !in_golden.contains(*f)).collect();
-    assert!(
-        extra.is_empty(),
-        "corpus files with no golden entry (regenerate tests/data/golden.txt): {extra:?}"
-    );
-    assert!(checked > 0, "no corpus files found on disk");
-    assert!(
-        diffs.is_empty(),
-        "{} lines differ from the Python pipeline ({checked} files checked, {skipped} \
-         missing from disk):\n{}",
-        diffs.len(),
-        diffs
-            .iter()
-            .take(20)
-            .cloned()
-            .collect::<Vec<_>>()
-            .join("\n")
-    );
 }

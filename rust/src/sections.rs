@@ -7,7 +7,7 @@
 
 use flate2::{Decompress, FlushDecompress, Status};
 
-/// Minimum inflated size for a carved block to be kept (matches Python).
+/// Minimum inflated size for a carved block to be kept.
 const MIN_BLOB: usize = 64;
 
 const ZLIB_HEADERS: [[u8; 2]; 3] = [[0x78, 0x01], [0x78, 0x9C], [0x78, 0xDA]];
@@ -23,7 +23,7 @@ pub enum TransmitKind {
 ///
 /// Returns the inflated bytes and the number of input bytes consumed. A
 /// truncated (but otherwise valid) stream yields what was decoded and consumes
-/// all of the input, matching Python's `decompressobj().decompress()`.
+/// all of the input: trailing garbage after a valid stream is not an error.
 fn inflate_zlib_prefix(input: &[u8]) -> Option<(Vec<u8>, usize)> {
     let mut dec = Decompress::new(true);
     let mut out: Vec<u8> = Vec::new();

@@ -1,8 +1,7 @@
 //! XT curve evaluators. See `docs/FORMAT.md` §4.
 //!
-//! Ported from `solid_diff/geom.py`. Parameterizations only need `eval`/`inv`
-//! to invert each other; Parasolid's exact scaling conventions never matter
-//! downstream.
+//! Parameterizations only need `eval`/`inv` to invert each other; Parasolid's
+//! exact scaling conventions never matter downstream.
 
 use super::{add, cross, dist, dot, scale, sub, unit, Curve, P3, TWO_PI};
 use crate::graph::Graph;
@@ -148,7 +147,7 @@ fn knot_span(knots: &[f64], degree: usize, ncp: usize, t: f64) -> (usize, f64) {
     let t0 = k(degree);
     let t1 = k(ncp);
     // Nudge off the right end so the last span (not the empty one past it) is
-    // selected, exactly as the Python does.
+    // selected.
     let hi = (t1 - 1e-14 * t1.abs().max(1.0)).max(t0);
     let t = if t.is_finite() { t.clamp(t0, hi) } else { t0 };
     let mut span = knots.partition_point(|&x| x <= t).saturating_sub(1);
