@@ -2,7 +2,7 @@
 
 Everything we know about SolidWorks part files (2015+), at the byte level,
 compiled 2026-07-25. Written as the implementation spec for the Rust crate in
-`rust/` (originally to port a Python prototype, since removed). Confidence markers: **[V]** verified
+`rust/`. Confidence markers: **[V]** verified
 against our 1500+-file corpus, **[E]** empirical (works everywhere tried, no
 spec backing), **[U]** unknown/untested.
 

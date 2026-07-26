@@ -1,6 +1,6 @@
 //! XT surface evaluators. See `docs/FORMAT.md` §4.
 //!
-//! Ported from `solid_diff/geom.py`. `eval`/`inv` only need to invert each
+//! `eval`/`inv` only need to invert each
 //! other; anything unsupported returns `None` so the caller can fall back to a
 //! best-fit plane.
 
@@ -452,7 +452,7 @@ pub struct SpunSurf {
 impl SpunSurf {
     fn from_node(graph: &Graph, node: &Node) -> Option<Self> {
         // The 13006 schema calls these `profile`/`base`; older notes (and the
-        // Python port) say `section`/`pvec`. Accept either.
+        // files) say `section`/`pvec`. Accept either.
         let curve_node = node
             .ptr("profile")
             .or_else(|| node.ptr("section"))

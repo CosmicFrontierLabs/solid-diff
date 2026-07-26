@@ -340,7 +340,7 @@ fn match_type(s: &[u8], at: usize) -> Option<(RawType<'_>, usize)> {
 ///
 /// Mirrors `parse_base_schema`: non-transmitted types are dropped, so are
 /// non-transmitted *fields*, and a type whose transmitted fields include an
-/// unknown type code is dropped entirely (Python raises inside the loop and
+/// unknown type code is dropped entirely (the error surfaces inside the loop and
 /// catches it per type — e.g. TAG_VALUES, which has a `t` field).
 pub fn parse_base_schema(text: &str) -> HashMap<i16, TypeDef> {
     let s = text.as_bytes();
@@ -388,7 +388,7 @@ pub fn parse_base_schema(text: &str) -> HashMap<i16, TypeDef> {
                     n_elements: f.n_elements,
                 }),
                 None => {
-                    // Python throws out the whole type in this case.
+                    // The whole type is thrown out in this case.
                     bad_code = true;
                     break;
                 }
@@ -447,12 +447,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn base_schema_matches_python() {
+    fn base_schema_parses_to_expected_shape() {
         let s = base_schema();
         // psparser's parse_base_schema keeps exactly these many types.
         assert_eq!(s.len(), 104);
         assert_eq!(base_schema_name(), "13006");
-        // TAG_VALUES (88) has a 't'-coded field, so Python drops the type.
+        // TAG_VALUES (88) has a 't'-coded field, so the type is dropped.
         assert!(!s.contains_key(&88));
 
         let cyl = s.get(&52).unwrap();

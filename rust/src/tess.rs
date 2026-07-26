@@ -719,7 +719,7 @@ impl PlaneShim {
             }
         }
         // covariance of the boundary points; its smallest eigenvector is the
-        // plane normal (equivalent to the SVD the Python version uses)
+        // plane normal (equivalent to an SVD of the centred points)
         let mut c = [[0.0f64; 3]; 3];
         for lp in loops3d {
             for p in lp {

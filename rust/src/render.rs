@@ -7,7 +7,7 @@
 //! per-face override hook (`color_map`) for diff rendering. Feature edges
 //! (sharp dihedrals, open boundaries) are stroked in paint order.
 //!
-//! Port of `solid_diff/render.py`; see `docs/FORMAT.md` §6. Build and traversal
+//! See `docs/FORMAT.md` §6. Build and traversal
 //! of the BSP are iterative (explicit stacks) — the trees get deep enough on
 //! real parts that recursion is not safe.
 
@@ -308,7 +308,7 @@ fn feature_edges(mesh: &Mesh) -> Vec<Vec<(usize, usize)>> {
         .collect();
 
     // Insertion-ordered edge -> owning triangles, so output is deterministic
-    // and matches the Python (which relies on dict insertion order).
+    // insertion order, so output is deterministic run to run.
     let mut owner: HashMap<(u32, u32), usize> = HashMap::with_capacity(t.len() * 2);
     let mut order: Vec<((u32, u32), Vec<usize>)> = Vec::with_capacity(t.len() * 2);
     for (ti, tri) in t.iter().enumerate() {
@@ -362,7 +362,7 @@ fn num(x: f64) -> String {
     }
 }
 
-/// Python-ish float repr (`1.0` stays `1.0`, `0.55` stays `0.55`).
+/// Compact float repr (`1.0` stays `1.0`, `0.55` stays `0.55`).
 fn pynum(x: f64) -> String {
     if x.fract() == 0.0 && x.abs() < 1e15 {
         format!("{x:.1}")

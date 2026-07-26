@@ -83,7 +83,7 @@ impl<'a> Reader<'a> {
         Ok(self.f64()?.unwrap_or(f64::NAN))
     }
 
-    /// ASCII string of `n` bytes (Python decodes strict ASCII).
+    /// ASCII string of `n` bytes; strict, non-ASCII is an error.
     pub fn char(&mut self, n: usize) -> Result<String, XtError> {
         let b = self.take(n)?;
         if b.iter().any(|c| *c >= 0x80) {

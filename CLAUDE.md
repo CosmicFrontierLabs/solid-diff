@@ -15,18 +15,9 @@ OLE2 support without a reason to revisit that trade.
 
 ## Layout
 
-Everything is the Rust crate in `rust/`. There is no Python implementation: a
-prototype proved the format and served as the cross-check oracle during the
-port, then was removed. What survives from it is the recorded ground truth in
-`rust/tests/data/`:
-
-- `golden.txt` — container/section/XT decoding over the whole corpus, with an
-  FNV-1a hash of every field of every node (32,473 nodes across 115 transmits).
-- `geom_golden.txt` — 2,157 curve and surface evaluations on real parts.
-
-**These are frozen.** Their generators are gone, so they cannot be
-regenerated — treat a mismatch as a regression in the Rust code, never as
-stale data to refresh.
+Everything is the Rust crate in `rust/`. An earlier prototype proved the
+format and was deleted once the port passed it; nothing of it remains, and
+nothing here is written to agree with it.
 
 `tools/` holds shell and standalone Python utilities (contact-sheet batching,
 the render gallery server); none of it is part of the library.
@@ -35,7 +26,7 @@ the render gallery server); none of it is part of the library.
 
 ```sh
 cd rust
-cargo test --release          # 71 tests
+cargo test --release          # 76 tests
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 ```
@@ -43,6 +34,35 @@ cargo fmt --check
 CI runs all three. Corpus tests skip themselves when `samples/*.SLDPRT` are
 absent (they are fetched by `samples/fetch.sh`, not committed); vault parts in
 `vault/` are committed.
+
+### What the tests assert against
+
+There is no recorded reference output anywhere in this repo, on purpose. A
+snapshot of some earlier run only tells you that behaviour *changed*, and it
+preserves that run's mistakes indefinitely — the previous snapshots were one
+reverse-engineering's guesses, and 34 of their 149 entries pinned a parse
+*failure* as the expected answer.
+
+`tests/invariants.rs` replaces that with claims the files make about
+themselves, so a wrong answer can be detected as wrong:
+
+- **Redundancy in the file.** Parasolid stores a VERTEX's coordinates *and*
+  the curve it lies on, and stores an EDGE's curve *and* the two surfaces it
+  separates. Those must agree, and only correct decoding plus correct
+  evaluation makes them. Currently 0/3,628 and 0/10,866 disagreements, worst
+  error 3e-10 — so this gate is tight enough to catch essentially any
+  evaluator regression.
+- **Combinatorial identities**, which need no tolerance: halfedge pairing is
+  an involution with opposite senses over one edge, and loops close through
+  `backward` covering exactly their member halfedges.
+- **Budgets, never snapshots**, for what is still wrong — `INTERSECTION`
+  curves, `BLENDED_EDGE` surfaces, and corpus-wide hole/flip/non-manifold
+  counts. These may only ever be *lowered*; lower them in the same commit that
+  earns it. They are not per-part output, because that would fight every
+  legitimate improvement.
+
+The split is deliberate: assert exactly where the maths says the answer is
+exact, ratchet where we know we are approximating.
 
 ## Measuring mesh quality
 

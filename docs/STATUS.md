@@ -14,10 +14,10 @@ Windows and no commercial SDK, and produces meshes and renders:
         → surface/curve evaluation → tessellation → OBJ/STL/SVG
 ```
 
-Everything is the Rust crate in `rust/`. A Python prototype proved the format
-and acted as the cross-check oracle while the port was built; it has been
-removed, and the golden files it produced live on in `rust/tests/data/` as
-frozen ground truth that the Rust decoders are still tested against.
+Everything is the Rust crate in `rust/`. An earlier prototype proved the
+format and has been removed along with the snapshots it produced; the suite
+now tests invariants the files assert about themselves (`tests/invariants.rs`)
+rather than agreement with any prior implementation.
 
 ### Vault coverage (1536 files)
 
@@ -38,7 +38,7 @@ is 641,978. Mesh quality at scale is the honest weak spot: only 7.6% of
 parts come out fully watertight and the median part has 92 open edges,
 which is what #7 (constrained Delaunay) and #5 are about.
 
-Notably the one file that OOM-killed the old Python sweep at 37.8 GB (#1)
+Notably the one file that OOM-killed the old prototype's sweep at 37.8 GB (#1)
 takes well under a second here — it carries no geometry at all, so that OOM
 was a bug in the removed prototype, not a hard part.
 
@@ -78,53 +78,46 @@ orientation errors that used to present as holes surface as what they are.
 **No part is yet fully watertight**, and face-level orientation (#21) is the
 biggest remaining defect class.
 
-Historical: while the Python prototype existed, the two agreed to
-bit-identical XT decoding (32,473 nodes), geometry evaluation within
-4.3e-10 m over 2,157 evaluations, and byte-identical `.x_b` extraction. Rust
-was ~17x faster.
-
 ## Open work
 
-All tracked as GitHub issues. Summary of what is left, worst first:
+All tracked as GitHub issues. Summary of what is left, worst first.
 
 ### Correctness
 
-- **[#1] One vault part carries no B-rep.**
-  `CVS-22055[TAM]_03202026__00000914_v2` has a 1-node stub partition and no
-  `LocalBodies` stream, so there is nothing to mesh. (It also OOM-killed the
-  removed Python prototype at 37.8 GB; that bug went with it.)
-- **[#5] Faces winding in both parameter directions still guess.** Mostly
-  fixed: a periodic direction the loops do not cover has a provably-outside
-  anchor in the gap, which took corpus open edges from 13,348 to 12,711 and
-  the worst part (the screw-mount nut) from 970 open edges to 263. Only
-  faces that wind in *both* directions still fall back to the material-left
-  heuristic.
-- **[#2] `SPUN_SURF` is dead code in Python** — `geom.py` reads
-  `section`/`pvec` but the schema defines `profile`/`base`/`axis`/`x_axis`,
-  so it always falls back to a plane. 55 faces / 15 files.
-- **[#3] `SP_CURVE` unimplemented in both** — 75 edges / 14 files fall back
-  to straight chords.
-- **[#4] `BLENDED_EDGE range[0]` can be negative**; the sign encodes
-  convexity. Python uses it verbatim and mirrors the fillet to the wrong
-  side. Rust takes the magnitude.
-- **[#7] Unconstrained Delaunay.** Both implementations triangulate then
-  filter by centroid, so concave corners can be cut. `spade` is already a
-  dependency and supports a real CDT. This is the main lever on the
-  watertightness numbers above (7.6% of parts fully closed).
+- **[#21] Face-level orientation is the biggest defect class.** On
+  NURBS-heavy parts roughly half of all shared edges have their two triangles
+  wound opposite each other. Corpus total: 10,468 winding mismatches.
+- **[#23] `INTERSECTION` curves miss the surfaces they bound.** They carry no
+  closed form and are interpolated from whatever samples their CHART stores,
+  so 96 of 226 vertex checks land off-curve, worst case **9% of model
+  scale**. Every other curve type is exact to 3e-10. Projecting the samples
+  onto the two surfaces they are the intersection of would fix it.
+- **[#4] `BLENDED_EDGE` reconstruction is wrong, not merely coarse.** Exact
+  CIRCLE boundaries fail to lie on the blend 6/6 times, and the surface is
+  off for 32 of 39 checked points. The negative `range[0]` sign encodes
+  convexity and is currently taken as a magnitude.
+- **[#5] Doubly-periodic faces still guess.** A periodic direction the loops
+  do not cover gets a provably-outside anchor, but faces winding in *both*
+  directions (tori) fall back to a material-left heuristic.
+- **[#3] `SP_CURVE` unimplemented** — 75 edges / 14 files fall back to
+  straight chords.
+- **[#6] Deltas transmits never parse** (extended node types absent from
+  schema 13006). Not ignorable: `CVS-22055[TAM]_03202026__00000914_v2` has a
+  307-byte stub partition and keeps all 109 kB of its geometry in the deltas
+  transmit, so it silently meshes to zero triangles.
+
+### Performance
+
 - **[#14] Per-face work is not parallelised.** The two pathologies are fixed
   (a uniform-grid index over boundary segments, and analytic NURBS
   derivatives), which took the worst parts from *never finishing* to 22 s and
   the full 1536-part sheet run from ~22 min to **118 s**. Faces are
   independent, so rayon over the per-face loop is the remaining lever.
-- **[#6] Deltas transmits never parse** (extended node types absent from
-  schema 13006). Harmless for meshing; blocks reading edit history.
 
-### Renderer bugs found in Python, fixed in Rust
+### Renderer
 
-- **[#8] Paint order and the front-face test were both inverted** — the two
-  cancel visually, which is how they survived.
 - **[#9] Feature edges crossing a BSP split are dropped** rather than
-  clipped, so silhouettes can gain gaps (present in both).
+  clipped, so silhouettes can gain gaps.
 
 ### Documentation
 
@@ -139,5 +132,5 @@ All tracked as GitHub issues. Summary of what is left, worst first:
   is in place: stable `FACE_ID`s survive parsing and the renderer takes a
   `color_map: face_id → rgb` override.
 - **[#12] No assembly (`.SLDASM`) support**; the vault holds 759 of them.
-- **[#13] Legacy OLE2 (pre-2015) files are unread** — 16 in the vault, all
-  purchased vendor content.
+
+Closed as out of scope: **[#13]** pre-2015 OLE2 files (see `CLAUDE.md`).
