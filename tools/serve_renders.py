@@ -470,12 +470,46 @@ def report_page() -> bytes:
 
 
 class Server(ThreadingHTTPServer):
+    """Dual-stack by default.
+
+    `localhost` resolves to `::1` before `127.0.0.1` on most modern systems, so
+    a server bound to 0.0.0.0 is invisible to any client that does not fall
+    back to IPv4 -- curl does, plenty of clients do not, and the failure looks
+    like a hang rather than a refusal. Binding `::` with IPV6_V6ONLY cleared
+    accepts both families on one socket.
+    """
+
+    address_family = socket.AF_INET6
     daemon_threads = True
     # A browser opens several connections per page and a render can hold a
     # thread for seconds; the stdlib default backlog of 5 drops the rest, which
     # a proxy in front reports as a connection timeout rather than a refusal.
     request_queue_size = 128
     allow_reuse_address = True
+
+    def server_bind(self):
+        if self.address_family == socket.AF_INET6:
+            try:
+                self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+            except OSError:
+                pass  # kernel without dual-stack; the v4 fallback below covers it
+        super().server_bind()
+
+
+class Server4(Server):
+    address_family = socket.AF_INET
+
+
+def make_server(bind: str, port: int):
+    """Prefer a dual-stack socket, fall back to IPv4 where that is refused."""
+    if bind in ("", "::", "0.0.0.0"):
+        try:
+            return Server(("::", port), Handler)
+        except OSError:
+            return Server4(("0.0.0.0", port), Handler)
+    family = socket.AF_INET6 if ":" in bind else socket.AF_INET
+    cls = Server if family == socket.AF_INET6 else Server4
+    return cls((bind, port), Handler)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -792,7 +826,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--root", default="renders", type=Path)
     ap.add_argument("--port", type=int, default=8791)
-    ap.add_argument("--bind", default="0.0.0.0")
+    ap.add_argument("--bind", default="::", help="bind address; :: is dual-stack")
     ap.add_argument(
         "--parts", type=Path, help="directory of .SLDPRT to review one at a time"
     )
@@ -829,7 +863,7 @@ def main():
             f"on {args.jobs} workers, cache {CACHE}"
         )
 
-    srv = Server((args.bind, args.port), Handler)
+    srv = make_server(args.bind, args.port)
     n = sum(1 for _ in ROOT.rglob("*") if _.is_file())
     print(f"serving {ROOT} ({n} files) on http://{socket.gethostname()}:{args.port}/")
     if PARTS:
