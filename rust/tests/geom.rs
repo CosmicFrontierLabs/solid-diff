@@ -1202,3 +1202,78 @@ fn trace_declines_when_surfaces_are_parallel() {
     };
     assert!(pair.trace([0.0; 3], [1.0, 0.0, 0.0], 32).is_none());
 }
+
+// ── blend arc keeps its side (#4) ───────────────────────────────────────────
+
+/// Two perpendicular planes with a straight spine: the rolling-ball fillet is
+/// exactly a quarter cylinder of radius r, so every point of it is known.
+fn quarter_round_blend(r: f64) -> Graph {
+    // Walls x = 0 and y = 0; ball centre runs along (r, r, t).
+    Graph::new(vec![
+        node(
+            1,
+            "BLENDED_EDGE",
+            vec![
+                ("range", arr_f(&[r, r])),
+                ("spine", Value::Ptr(Some(2))),
+                (
+                    "surface",
+                    Value::Array(vec![Value::Ptr(Some(3)), Value::Ptr(Some(4))]),
+                ),
+            ],
+        ),
+        node(
+            2,
+            "LINE",
+            vec![("pvec", v3(r, r, 0.0)), ("direction", v3(0.0, 0.0, 1.0))],
+        ),
+        plane_node(3, [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
+        plane_node(4, [0.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]),
+    ])
+}
+
+#[test]
+fn blend_round_trips_every_point_of_its_arc() {
+    let r = 0.5;
+    let g = quarter_round_blend(r);
+    let s = make_surface(&g, g.get(1).unwrap()).expect("blend");
+
+    // Walk the true quarter arc in the z = 1 cross-section. The centre is at
+    // (r, r), and the fillet runs from (0, r) round to (r, 0).
+    let mut worst: f64 = 0.0;
+    for k in 0..=40 {
+        let a = std::f64::consts::FRAC_PI_2 * (k as f64 / 40.0);
+        let p = [r - r * a.cos(), r - r * a.sin(), 1.0];
+        let back = s.eval(s.inv(p));
+        worst = worst.max(dist3(back, p));
+    }
+    assert!(
+        worst < 1e-6 * r.max(1.0),
+        "eval(inv(p)) is {worst:.3e} off for points on the blend's own arc"
+    );
+}
+
+#[test]
+fn blend_does_not_mirror_across_the_spine() {
+    // The failure this guards: inv used an unsigned angle, so a point and its
+    // mirror image through the spine produced the same v and eval rebuilt both
+    // on the same side -- an error of about 2r.
+    let r = 0.5;
+    let g = quarter_round_blend(r);
+    let s = make_surface(&g, g.get(1).unwrap()).expect("blend");
+
+    let on_arc = [r - r * 0.5f64.sqrt(), r - r * 0.5f64.sqrt(), 1.0];
+    let mirrored = [r + r * 0.5f64.sqrt(), r + r * 0.5f64.sqrt(), 1.0];
+    let v_on = s.inv(on_arc)[1];
+    let v_mirror = s.inv(mirrored)[1];
+    assert!(
+        (v_on - v_mirror).abs() > 0.1,
+        "a point and its mirror both map to v = {v_on:.4}; the side is being lost"
+    );
+    // Tolerance is set by the ternary search that locates u on the spine,
+    // not by the arc maths.
+    assert!(
+        dist3(s.eval(s.inv(on_arc)), on_arc) < 1e-6,
+        "the point actually on the arc must round trip"
+    );
+}

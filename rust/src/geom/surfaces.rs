@@ -990,8 +990,24 @@ impl Surface for BlendedEdge {
         };
         let dn = unit(sub(p, c));
         let ang = dot(d1, d2).clamp(-1.0, 1.0).acos();
-        let a1 = dot(d1, dn).clamp(-1.0, 1.0).acos();
-        [u, if ang > 1e-9 { a1 / ang } else { 0.0 }]
+        if ang <= 1e-9 {
+            return [u, 0.0];
+        }
+        // Signed angle from d1 towards d2, measured in the arc's own plane.
+        //
+        // `acos(d1.dn)` is unsigned, so a point on the far side of d1 produced
+        // the same v as its mirror image on the arc, and eval then rebuilt it
+        // on the wrong side -- about 2r away, which is exactly the error seen
+        // on real blends. Resolving the direction with atan2 against the
+        // in-plane perpendicular keeps the side.
+        let n = cross(d1, d2);
+        let perp = if norm(n) > 1e-12 {
+            unit(cross(unit(n), d1))
+        } else {
+            d1
+        };
+        let a1 = dot(dn, perp).atan2(dot(dn, d1));
+        [u, a1 / ang]
     }
 
     fn period_u(&self) -> Option<f64> {
