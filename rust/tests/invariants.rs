@@ -639,7 +639,7 @@ fn mesh_vertices_lie_on_their_source_surface() {
 /// fixing a trimming bug changes triangle counts everywhere.
 const MESH_BUDGET: &[(&str, usize)] = &[
     ("holes", 4092),
-    ("winding mismatches", 9587),
+    ("winding mismatches", 54),
     ("non-manifold", 25),
     ("parts that fail to mesh", 3),
 ];

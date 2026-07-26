@@ -19,6 +19,107 @@ pub struct Mesh {
 }
 
 impl Mesh {
+    /// Make neighbouring triangles agree on winding, then point each closed
+    /// piece outwards.
+    ///
+    /// Winding is decided per face during tessellation, from the parametric
+    /// normal times the surface and face senses. That rule is right for the
+    /// analytic surfaces but depends on the handedness of the parameterisation,
+    /// and for a NURBS surface the handedness is whatever the control net
+    /// happens to give -- so neighbouring faces disagreed and roughly half of
+    /// all shared edges on NURBS-heavy parts came out wound opposite (#21).
+    ///
+    /// Consistency does not need any of that. Two triangles sharing an edge
+    /// agree exactly when they traverse it in opposite directions, which is a
+    /// purely combinatorial test. Flood filling that relation orients each
+    /// connected piece up to one global sign per piece.
+    ///
+    /// That remaining sign is settled by majority vote against the winding the
+    /// per-face rule produced, not by forcing the enclosed volume positive.
+    /// Volume looks like the principled choice and is not: the shell of an
+    /// internal void is closed and encloses *negative* volume by design, so
+    /// forcing it positive turns the void inside out. Measured -- it inverted
+    /// two bodies in the corpus. The per-face rule is right far more often
+    /// than not, so trusting its majority keeps voids intact.
+    pub fn orient(&mut self) {
+        if self.triangles.is_empty() {
+            return;
+        }
+        // Undirected edge -> the triangles using it, with the direction each
+        // one traverses it in.
+        let mut users: HashMap<(u32, u32), Vec<(usize, bool)>> = HashMap::new();
+        for (ti, t) in self.triangles.iter().enumerate() {
+            for k in 0..3 {
+                let (a, b) = (t[k], t[(k + 1) % 3]);
+                let key = if a < b { (a, b) } else { (b, a) };
+                users.entry(key).or_default().push((ti, a < b));
+            }
+        }
+
+        let n = self.triangles.len();
+        let mut component = vec![usize::MAX; n];
+        let mut flip = vec![false; n];
+        let mut components = 0usize;
+
+        for seed in 0..n {
+            if component[seed] != usize::MAX {
+                continue;
+            }
+            component[seed] = components;
+            let mut stack = vec![seed];
+            while let Some(ti) = stack.pop() {
+                let t = self.triangles[ti];
+                for k in 0..3 {
+                    let (a, b) = (t[k], t[(k + 1) % 3]);
+                    let key = if a < b { (a, b) } else { (b, a) };
+                    // Direction this triangle traverses the edge, accounting
+                    // for a flip already scheduled for it.
+                    let dir = (a < b) != flip[ti];
+                    let Some(list) = users.get(&key) else {
+                        continue;
+                    };
+                    // Only propagate across manifold edges. Where three or
+                    // more triangles meet there is no single correct partner,
+                    // and guessing would spread one arbitrary choice.
+                    if list.len() != 2 {
+                        continue;
+                    }
+                    for &(tj, dj) in list {
+                        if tj == ti {
+                            continue;
+                        }
+                        let want = !dir; // neighbours must run it the other way
+                        if component[tj] == usize::MAX {
+                            component[tj] = components;
+                            flip[tj] = dj != want;
+                            stack.push(tj);
+                        }
+                    }
+                }
+            }
+            components += 1;
+        }
+
+        // Per component: if making it consistent would flip most of its
+        // triangles, invert the whole component instead, so the piece keeps
+        // the orientation the majority of faces already had.
+        let mut total = vec![0usize; components];
+        let mut flipped = vec![0usize; components];
+        for ti in 0..n {
+            total[component[ti]] += 1;
+            if flip[ti] {
+                flipped[component[ti]] += 1;
+            }
+        }
+        for ti in 0..n {
+            let ci = component[ti];
+            let invert = flipped[ci] * 2 > total[ci];
+            if flip[ti] != invert {
+                self.triangles[ti].swap(1, 2);
+            }
+        }
+    }
+
     pub fn is_empty(&self) -> bool {
         self.triangles.is_empty()
     }
@@ -284,5 +385,77 @@ mod manifold_tests {
         let r = m.manifold_report();
         assert_eq!(r.degenerate, 1, "{r}");
         assert!(r.non_manifold >= 1, "edge 0-1 now has three users: {r}");
+    }
+}
+
+#[cfg(test)]
+mod orient_tests {
+    use super::*;
+
+    fn tetra() -> Mesh {
+        Mesh {
+            vertices: vec![
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+            ],
+            triangles: vec![[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]],
+            face_ids: vec![1, 2, 3, 4],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn one_reversed_face_is_repaired() {
+        let mut m = tetra();
+        m.triangles[2].swap(1, 2);
+        assert_eq!(m.manifold_report().flipped, 3, "setup: three bad edges");
+        m.orient();
+        let r = m.manifold_report();
+        assert_eq!(r.flipped, 0, "orient must make neighbours agree: {r}");
+        assert!(r.is_watertight(), "{r}");
+    }
+
+    #[test]
+    fn an_already_correct_mesh_is_left_alone() {
+        let before = tetra();
+        let mut after = tetra();
+        after.orient();
+        assert_eq!(before.triangles, after.triangles);
+        assert!(after.signed_volume() > 0.0);
+    }
+
+    #[test]
+    fn a_wholly_inverted_shell_keeps_its_sign() {
+        // Every face reversed: consistent already, so orient has nothing to
+        // repair and must not "correct" the volume. An internal void is
+        // exactly this shape, and forcing its volume positive would turn the
+        // void inside out.
+        let mut m = tetra();
+        for t in &mut m.triangles {
+            t.swap(1, 2);
+        }
+        let before = m.signed_volume();
+        assert!(before < 0.0);
+        m.orient();
+        assert_eq!(m.manifold_report().flipped, 0);
+        assert!(
+            m.signed_volume() < 0.0,
+            "an inverted-but-consistent shell must keep its orientation"
+        );
+    }
+
+    #[test]
+    fn majority_decides_the_global_sign() {
+        // Three of four faces reversed: the majority is the reversed set, so
+        // the repaired mesh should follow them rather than the lone original.
+        let mut m = tetra();
+        for i in [0, 1, 2] {
+            m.triangles[i].swap(1, 2);
+        }
+        m.orient();
+        assert_eq!(m.manifold_report().flipped, 0);
+        assert!(m.signed_volume() < 0.0);
     }
 }
