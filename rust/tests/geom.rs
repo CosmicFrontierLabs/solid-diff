@@ -328,8 +328,12 @@ fn intersection_polyline() {
     close3(c.eval(2.0), [1.0, 1.0, 0.0], 1e-12);
     close3(c.eval(5.0), [1.0, 2.0, 2.0], 1e-12);
     close3(c.eval(9.0), [1.0, 2.0, 2.0], 1e-12); // clamped
-                                                 // inv snaps to the nearest chart sample
-    close(c.inv([1.0, 1.9, 0.1]), 3.0, 1e-12);
+
+    // inv projects onto the nearest segment, not the nearest stored sample.
+    // A point 0.4 along the second leg must come back as s = 1 + 0.4*2 = 1.8;
+    // snapping to samples would have returned 1.0 or 3.0.
+    close(c.inv([1.05, 0.4, 0.0]), 1.4, 1e-12);
+    close3(c.eval(c.inv([1.0, 1.5, 0.0])), [1.0, 1.5, 0.0], 1e-12);
 }
 
 #[test]
@@ -1012,4 +1016,108 @@ fn spun_surf_with_a_closed_profile_is_periodic_in_v() {
         let d = ((spine_r - 2.0).powi(2) + p[2] * p[2]).sqrt();
         close(d, 0.25, 1e-9);
     }
+}
+
+// ── INTERSECTION curves refined against their two surfaces (#23) ────────────
+
+/// A chart deliberately stored at only four samples, for a curve whose true
+/// shape is known exactly: a cylinder of radius R about the z axis cut by the
+/// plane z = 0 is the circle x^2 + y^2 = R^2.
+fn coarse_circle_intersection(r: f64, samples: usize) -> Vec<Node> {
+    let mut hvec = Vec::new();
+    for k in 0..=samples {
+        let a = TWO_PI * (k as f64) / (samples as f64);
+        hvec.extend_from_slice(&[r * a.cos(), r * a.sin(), 0.0]);
+    }
+    vec![
+        node(
+            1,
+            "INTERSECTION",
+            vec![
+                (
+                    "surface",
+                    Value::Array(vec![Value::Ptr(Some(2)), Value::Ptr(Some(3))]),
+                ),
+                ("chart", Value::Ptr(Some(4))),
+            ],
+        ),
+        node(
+            2,
+            "CYLINDER",
+            vec![
+                ("pvec", v3(0.0, 0.0, 0.0)),
+                ("axis", v3(0.0, 0.0, 1.0)),
+                ("radius", f(r)),
+                ("x_axis", v3(1.0, 0.0, 0.0)),
+            ],
+        ),
+        plane_node(3, [0.0, 0.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]),
+        node(
+            4,
+            "CHART",
+            vec![("hvec", arr_f(&hvec)), ("chordal_error", f(1e-6))],
+        ),
+    ]
+}
+
+#[test]
+fn intersection_curve_is_pulled_onto_both_surfaces() {
+    let r = 2.0;
+    // Four samples means the raw chart is a square inscribed in the circle:
+    // its edge midpoints sit at radius r/sqrt(2), a 29% error.
+    let (_g, c) = curve_of(coarse_circle_intersection(r, 4), 1);
+    let (t0, t1) = c.full_range().expect("range");
+
+    let mut worst: f64 = 0.0;
+    for k in 0..=400 {
+        let p = c.eval(t0 + (t1 - t0) * (k as f64 / 400.0));
+        let radial = (p[0] * p[0] + p[1] * p[1]).sqrt();
+        worst = worst.max((radial - r).abs()).max(p[2].abs());
+    }
+    // Every evaluated point must lie on the true circle, not on the chords.
+    assert!(
+        worst < 1e-4,
+        "refined curve deviates from the analytic circle by {worst:.3e}"
+    );
+}
+
+#[test]
+fn unrefined_chart_would_have_been_far_off() {
+    // Guards the test above from passing vacuously: with the same four samples
+    // and no surfaces to refine against, the midpoints really are 29% out.
+    let mut nodes = coarse_circle_intersection(2.0, 4);
+    nodes[0].fields.retain(|(k, _)| k != "surface");
+    let (_g, c) = curve_of(nodes, 1);
+    let (t0, t1) = c.full_range().expect("range");
+    let p = c.eval(t0 + (t1 - t0) * 0.125); // midpoint of the first chord
+    let radial = (p[0] * p[0] + p[1] * p[1]).sqrt();
+    assert!(
+        (radial - 2.0).abs() > 0.5,
+        "expected a large chord error without refinement, got {radial}"
+    );
+}
+
+#[test]
+fn polyline_inv_projects_onto_segments_not_samples() {
+    // Straight polyline with one long segment: inv must return a parameter in
+    // the segment's interior, not snap to whichever endpoint is nearest.
+    let nodes = vec![
+        node(1, "INTERSECTION", vec![("chart", Value::Ptr(Some(2)))]),
+        node(
+            2,
+            "CHART",
+            vec![("hvec", arr_f(&[0.0, 0.0, 0.0, 10.0, 0.0, 0.0]))],
+        ),
+    ];
+    let (_g, c) = curve_of(nodes, 1);
+    let probe = [3.7, 0.0, 0.0];
+    let back = c.eval(c.inv(probe));
+    assert!(
+        dist3(back, probe) < 1e-9,
+        "inv/eval round trip landed at {back:?}, not {probe:?}"
+    );
+}
+
+fn dist3(a: P3, b: P3) -> f64 {
+    ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
 }

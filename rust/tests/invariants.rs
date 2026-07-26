@@ -436,10 +436,15 @@ fn closed_form_geometry_agrees_with_the_file() {
 /// regression; a drop means the comment below is stale and the budget should
 /// be tightened in the same commit that earned it.
 ///
-/// * `INTERSECTION` curves are interpolated from stored CHART samples (#23).
+/// * `INTERSECTION` curves are refined onto the two surfaces they run along
+///   (#23), which took this from 96 to 11. What remains is curves whose
+///   surfaces are not both closed-form, so refinement is declined.
 /// * `BLENDED_EDGE` fails even for exact CIRCLE boundaries, which says the
 ///   rolling-ball reconstruction is wrong rather than merely coarse (#4).
-const APPROX_BUDGET: &[(&str, usize)] = &[("INTERSECTION", 96), ("BLENDED_EDGE", 32)];
+///   This rose from 32 to 35 when #23 landed: the curves along blends became
+///   accurate, so more sample points now land where the blend surface is
+///   wrong. Disclosure, not regression -- fixing #4 should clear it.
+const APPROX_BUDGET: &[(&str, usize)] = &[("INTERSECTION", 11), ("BLENDED_EDGE", 35)];
 
 #[test]
 fn approximate_geometry_stays_within_budget() {
@@ -629,9 +634,9 @@ fn mesh_vertices_lie_on_their_source_surface() {
 /// per-part output -- that would fight every legitimate improvement, since
 /// fixing a trimming bug changes triangle counts everywhere.
 const MESH_BUDGET: &[(&str, usize)] = &[
-    ("holes", 4201),
-    ("winding mismatches", 10468),
-    ("non-manifold", 98),
+    ("holes", 4109),
+    ("winding mismatches", 10093),
+    ("non-manifold", 33),
     ("parts that fail to mesh", 3),
 ];
 
