@@ -33,6 +33,7 @@ import json
 import mimetypes
 import os
 import re
+import signal
 import socket
 import subprocess
 import sys
@@ -61,8 +62,12 @@ STATS: dict[str, str] = {}
 POOL: ThreadPoolExecutor | None = None
 INFLIGHT: set[int] = set()
 PREFETCH = 5
-FAILED: dict[int, str] = {}
+# Keyed by part name, not index: indices shift when the corpus changes, and
+# these outlive any one run.
+FAILED: dict[str, str] = {}
 WARMED = 0
+META_LOCK = threading.Lock()
+META_DIRTY = False
 
 
 def human(n: float) -> str:
@@ -203,6 +208,60 @@ def flags_path() -> Path:
     return CACHE / "flags.json"
 
 
+def parts_path() -> Path:
+    return CACHE / "part_stats.json"
+
+
+def load_part_meta() -> None:
+    """Restore measured stats and known failures from a previous run.
+
+    Without this every restart re-runs `mesh --stats` over the whole corpus and
+    the flagged report loses the numbers that justified each flag.
+    """
+    try:
+        blob = json.loads(parts_path().read_text())
+    except (OSError, ValueError):
+        return
+    for name, rec in blob.get("parts", {}).items():
+        if rec.get("stats"):
+            STATS[name] = rec["stats"]
+        if rec.get("error"):
+            FAILED[name] = rec["error"]
+
+
+def save_part_meta() -> None:
+    global META_DIRTY
+    with META_LOCK:
+        if not META_DIRTY:
+            return
+        names = set(STATS) | set(FAILED)
+        blob = {
+            "parts": {
+                n: {"stats": STATS.get(n, ""), "error": FAILED.get(n, "")} for n in names
+            }
+        }
+        META_DIRTY = False
+    CACHE.mkdir(parents=True, exist_ok=True)
+    tmp = parts_path().with_suffix(".tmp")
+    tmp.write_text(json.dumps(blob, indent=1, sort_keys=True))
+    tmp.replace(parts_path())
+
+
+def touch_meta() -> None:
+    global META_DIRTY
+    META_DIRTY = True
+
+
+def meta_flusher() -> None:
+    """Batch writes: warming 1536 parts must not mean 1536 file rewrites."""
+    while True:
+        time.sleep(5)
+        try:
+            save_part_meta()
+        except OSError:
+            pass
+
+
 def load_flags() -> None:
     global FLAGS
     try:
@@ -242,7 +301,7 @@ def render_part(i: int) -> Path | None:
     name = PARTS[i].name
     if out.exists() and name in STATS:
         return out
-    if i in FAILED:
+    if name in FAILED:
         return None
     CACHE.mkdir(parents=True, exist_ok=True)
     if not out.exists():
@@ -254,12 +313,14 @@ def render_part(i: int) -> Path | None:
                 timeout=RENDER_TIMEOUT,
             )
         except (subprocess.TimeoutExpired, OSError) as e:
-            FAILED[i] = f"render timed out after {RENDER_TIMEOUT}s ({e.__class__.__name__})"
-            STATS[name] = FAILED[i]
+            FAILED[name] = f"render timed out after {RENDER_TIMEOUT}s"
+            STATS[name] = FAILED[name]
+            touch_meta()
             return None
         if r.returncode != 0 or not out.exists():
-            FAILED[i] = f"render failed: {(r.stderr or r.stdout).strip()[:300]}"
-            STATS[name] = FAILED[i]
+            FAILED[name] = f"render failed: {(r.stderr or r.stdout).strip()[:300]}"
+            STATS[name] = FAILED[name]
+            touch_meta()
             return None
     if name not in STATS:
         try:
@@ -272,6 +333,7 @@ def render_part(i: int) -> Path | None:
             STATS[name] = (r.stdout + r.stderr).strip() or "(no stats)"
         except (subprocess.TimeoutExpired, OSError) as e:
             STATS[name] = f"stats unavailable: {e.__class__.__name__}"
+        touch_meta()
     return out
 
 
@@ -288,6 +350,7 @@ def warm_all() -> None:
         finally:
             WARMED += 1
             if WARMED % 100 == 0 or WARMED == len(PARTS):
+                save_part_meta()
                 sys.stderr.write(
                     f"  warmed {WARMED}/{len(PARTS)} ({len(FAILED)} failed)\n"
                 )
@@ -469,6 +532,8 @@ def report_markdown() -> str:
             out.append(f"- path: `{p}`")
         if meta.get("note"):
             out.append(f"- note: {meta['note']}")
+        if FAILED.get(name):
+            out.append(f"- **did not render**: {FAILED[name]}")
         stat = STATS.get(name)
         if stat:
             out.append("- stats:")
@@ -703,7 +768,7 @@ class Handler(BaseHTTPRequestHandler):
                     "path": str(part),
                     "stat": stat_line(part.name),
                     "flagged": flagged,
-                    "error": FAILED.get(i, ""),
+                    "error": FAILED.get(part.name, ""),
                     "warmed": WARMED,
                     "total": len(PARTS),
                 }
@@ -917,6 +982,12 @@ def main():
         if not PARTS:
             sys.exit(f"no .SLDPRT under {args.parts}")
         load_flags()
+        load_part_meta()
+        if STATS or FAILED:
+            print(
+                f"  restored {len(STATS)} measured parts, {len(FAILED)} known failures"
+            )
+        threading.Thread(target=meta_flusher, daemon=True).start()
         POOL = ThreadPoolExecutor(max_workers=args.jobs)
         if args.warm:
             threading.Thread(target=warm_all, daemon=True).start()
@@ -925,6 +996,10 @@ def main():
             f"({len(FLAGS)} already flagged), {PREFETCH} rendered ahead "
             f"on {args.jobs} workers, cache {CACHE}"
         )
+
+    # systemd stops us with SIGTERM, which would otherwise skip the flush
+    # below and lose everything measured since the last periodic save.
+    signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt))
 
     srv = make_server(args.bind, args.port)
     n = sum(1 for _ in ROOT.rglob("*") if _.is_file())
@@ -937,6 +1012,10 @@ def main():
         srv.serve_forever()
     except KeyboardInterrupt:
         print("\nstopped")
+    finally:
+        if PARTS:
+            touch_meta()
+            save_part_meta()
 
 
 if __name__ == "__main__":
