@@ -1,7 +1,7 @@
 # Extracting Parasolid B-rep from SLDPRT (2015+)
 
 **Status: working.** We can extract the full Parasolid B-rep from modern
-SolidWorks part files with pure open-source Python — no SolidWorks, no
+SolidWorks part files with open-source code alone — no SolidWorks, no
 Windows, no commercial SDK. Verified 2026-07-23 on 4 public sample parts
 (SolidWorks modeller versions 3000298–3100290, i.e. Parasolid v30–v31 /
 roughly SW2018–SW2019 era).
@@ -14,11 +14,11 @@ undecoded high-entropy data is simply zlib-wrapped Parasolid.
 
 ```
 SLDPRT (2015+ chunk container)
-  └─ solid_diff/container.py     — Python port of openswx's modern parser
+  └─ rust/src/container.rs       — port of openswx's modern parser
        └─ stream "Contents/Config-N-Partition"
-            └─ solid_diff/extract.py — section headers + zlib carve
+            └─ rust/src/sections.rs  — section headers + zlib carve
                  └─ Parasolid binary transmit (.x_b), 'PS' magic
-                      └─ vendor/ps-parser — full node-level parse
+                      └─ rust/src/xt/     — full node-level parse
                            WORLD → BODY[solid] → REGION → SHELL →
                            FACE/LOOP/HALFEDGE/EDGE + PLANE/CIRCLE/
                            NURBS_CURVE/KNOT_SET… + SW attributes
@@ -28,9 +28,9 @@ SLDPRT (2015+ chunk container)
 Try it:
 
 ```sh
-python3 -m solid_diff.psscan  samples/part.SLDPRT          # find signatures
-python3 -m solid_diff.extract samples/part.SLDPRT -o out/  # write .x_b files
-cd vendor/ps-parser && python3 cli.py ../../out/part.…partition.x_b --tree
+solid-diff scan    samples/part.SLDPRT            # find signatures
+solid-diff extract samples/part.SLDPRT -o out/    # write .x_b files
+solid-diff mesh    samples/part.SLDPRT -o part.obj --stats
 ```
 
 All 4/4 sample partitions parsed cleanly (127–540 nodes each), including
@@ -63,12 +63,12 @@ A Partition stream is a sequence of sections. Each section:
 
 Section 1 decompresses to a Parasolid **partition transmit**; section 2 to a
 **deltas transmit** (Parasolid modeller-session deltas — not needed for a
-geometry snapshot, and ps-parser doesn't decode it: it hits node type 257 >
-schema max 205, so it uses an extended/different node table).
+geometry snapshot, and we do not decode it: it hits node type 257 > schema
+max 205, so it uses an extended node table — see #6).
 
 ## The embedded transmit format
 
-Binary Parasolid transmit, exactly what `ps-parser` handles:
+Binary Parasolid transmit:
 
 ```
 'PS' | u32be len + banner ": TRANSMIT FILE (partition) created by modeller version NNNNNNN"
@@ -78,12 +78,12 @@ Binary Parasolid transmit, exactly what `ps-parser` handles:
 
 Note there is **no** ASCII `**ABCDEF…**PARASOLID` banner block like a
 standalone `.x_b` from Parasolid — the file starts straight at `PS`.
-ps-parser accepts this; other Parasolid consumers may want the text header
-prepended.
+Our decoder accepts this; other Parasolid consumers may want the text
+header prepended.
 
-The schema suffix `_13006` matches ps-parser's bundled base schema
-(`assets/sch_13006.s_t`); newer SolidWorks versions embed delta-schemas
-inline, which ps-parser resolves.
+The schema suffix `_13006` matches the base schema we embed
+(`rust/assets/sch_13006.s_t`); newer SolidWorks versions embed delta-schemas
+inline, which the decoder resolves.
 
 ## Known gaps / next steps
 
@@ -91,7 +91,7 @@ inline, which ps-parser resolves.
    ignorable: the partition transmit alone contains the complete solid.
    Verify on more complex parts (multi-body, surfaces, sheet metal).
 2. **B-rep → mesh: done** — see `docs/BREP2MESH.md` and
-   `solid_diff/brep2mesh.py`. We evaluate the XT geometry ourselves and
+   `rust/src/tess.rs`. We evaluate the XT geometry ourselves and
    tessellate to OBJ/STL. Faces on unsupported surfaces (notably
    `BLENDED_EDGE` fillets) currently get a best-fit-plane fallback.
 3. **Coverage:** only Config-0 single-config parts tested; test multi-config,

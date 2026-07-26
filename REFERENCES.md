@@ -99,7 +99,7 @@ GLB/STL.
 - SLDPRT embeds Parasolid B-rep (proven by Document Manager's "get Parasolid
   geometry" API). **Update 2026-07-23: solved in this repo** — the
   `Contents/Config-N-Partition` stream is zlib-wrapped Parasolid binary
-  transmit data; see `docs/PARASOLID.md` and `solid_diff/extract.py`.
+  transmit data; see `docs/PARASOLID.md` and `rust/src/sections.rs`.
 - The Parasolid **XT format itself is publicly documented** (Siemens "XT
   Format Reference", public PDF mirrors, e.g.
   http://www.13thmonkey.org/documentation/CAD/Parasolid-XT-format-reference.pdf).
@@ -132,7 +132,7 @@ GLB/STL.
 
 1. ~~No open-source library extracts geometry from SLDPRT today.~~
    **Superseded**: this repo now extracts the full Parasolid B-rep from 2015+
-   files with open-source Python (`docs/PARASOLID.md`). Remaining open work
+   files with open-source code (`docs/PARASOLID.md`). Remaining open work
    is B-rep surface evaluation → mesh.
 2. **Fallback geometry pipeline is conversion**: Zoo API (cloud) or CAD
    Exchanger CLI (on-prem) → STEP/GLB → mesh diff render.

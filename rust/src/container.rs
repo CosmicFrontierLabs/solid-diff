@@ -1,9 +1,9 @@
 //! SolidWorks 2015+ chunk container. See `docs/FORMAT.md` §1.
 //!
-//! Port of `solid_diff/container.py` (itself a port of openswx's modern
-//! parser). Everything in this layer is little-endian. Chunks are found by
-//! scanning for a 6-byte marker; each carries a ROL-encoded stream name and,
-//! for "inline" chunks, a raw-deflate payload.
+//! Follows openswx's modern-format parser. Everything in this layer is
+//! little-endian. Chunks are found by scanning for a 6-byte marker; each
+//! carries a ROL-encoded stream name and, for "inline" chunks, a raw-deflate
+//! payload.
 
 use std::io::Read;
 

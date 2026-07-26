@@ -15,10 +15,11 @@ files parse and mesh; the rest are pre-2015 OLE2 containers.
 
 The diff renderer itself is the remaining piece ([#11]).
 
-**Rust (`rust/`) is the primary implementation.** The Python package
-(`solid_diff/`) is the prototype that proved the format and is retained as the
-cross-check oracle. See [`docs/STATUS.md`](docs/STATUS.md) for coverage
-numbers, parity results and every known gap.
+Everything lives in the Rust crate under `rust/`. A Python prototype proved
+the format first and served as the cross-check oracle while the port was
+built; it has since been removed, but the golden files it produced are kept
+under `rust/tests/data/` as frozen ground truth. See
+[`docs/STATUS.md`](docs/STATUS.md) for coverage numbers and every known gap.
 
 ```sh
 cd rust && cargo build --release
@@ -45,13 +46,10 @@ Two rendering styles, for different jobs:
 triangle count and an auto-scaled scale bar per tile — matching the visual
 style of the GLB tooling in `tamalpais-configuration`.
 
-The Python equivalents (`python -m solid_diff.{psscan,extract,brep2mesh,render}`)
-take the same arguments.
-
 ## Docs
 
-- [`docs/STATUS.md`](docs/STATUS.md) — current coverage, Rust/Python parity
-  results, and the full list of open work.
+- [`docs/STATUS.md`](docs/STATUS.md) — current coverage, mesh-quality
+  numbers, and the full list of open work.
 - [`docs/FORMAT.md`](docs/FORMAT.md) — **the format spec**: byte-level
   description of everything reverse-engineered, from the container through
   the Parasolid XT node stream to the tessellation algorithm.
@@ -76,8 +74,7 @@ take the same arguments.
 | `rust/src/render.rs` | painter's-algorithm SVG renderer (BSP ordering) |
 | `rust/src/iso.rs` | isometric point-splat PNG renderer + contact sheets |
 | `rust/src/font.rs` | 5x7 bitmap font for image annotations |
-| `solid_diff/` | Python prototype / cross-check oracle |
-| `tools/` | corpus census, Rust-vs-Python parity harness |
+| `tools/` | contact-sheet batching, render gallery server |
 | `samples/fetch.sh` | fetch the public test corpus (16 parts) |
 
 Reference repos (openswx, ps-parser, sldprt-format-research) are cloned into
