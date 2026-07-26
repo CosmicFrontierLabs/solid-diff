@@ -1,8 +1,8 @@
 # The SLDPRT format, as reverse-engineered
 
 Everything we know about SolidWorks part files (2015+), at the byte level,
-compiled 2026-07-25. This is the implementation spec for porting the Python
-pipeline (`solid_diff/`) to a Rust crate. Confidence markers: **[V]** verified
+compiled 2026-07-25. Written as the implementation spec for the Rust crate in
+`rust/` (originally to port a Python prototype, since removed). Confidence markers: **[V]** verified
 against our 1500+-file corpus, **[E]** empirical (works everywhere tried, no
 spec backing), **[U]** unknown/untested.
 
@@ -293,7 +293,7 @@ perspective.
 
 ## 7. Suggested crate layout
 
-| Python | Rust module | notes |
+| stage | Rust module | notes |
 |---|---|---|
 | container.py | `container` | pure byte-slicing + `flate2` raw deflate |
 | extract.py | `sections` | zlib carve + banner sniff |

@@ -1,9 +1,12 @@
-//! Real-data cross-check against the Python reference evaluators.
+//! Real-data regression check for the curve and surface evaluators.
 //!
-//! `tests/data/geom_golden.txt` is produced by `tests/gen_golden.py` from
-//! `solid_diff/geom.py` (the ground truth). Each row replays one evaluation on
-//! a real sample part. If the XT parser cannot read the samples yet the test
-//! reports and skips rather than failing.
+//! `tests/data/geom_golden.txt` is a **frozen** snapshot: 2157 evaluations
+//! over every FACE surface and EDGE curve in the sample corpus, captured from
+//! the original Python implementation while it was still the reference (it
+//! agreed to <= 4.3e-10 m). That implementation has since been removed, so the
+//! file is no longer regenerable -- treat it as recorded ground truth. Each
+//! row replays one evaluation on a real sample part; if the samples are not
+//! fetched the test reports and skips rather than failing.
 
 use std::collections::HashMap;
 use std::path::PathBuf;

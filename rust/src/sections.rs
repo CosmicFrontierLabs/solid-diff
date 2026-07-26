@@ -1,10 +1,9 @@
 //! Geometry-stream sections and Parasolid transmit sniffing.
 //! See `docs/FORMAT.md` §2.
 //!
-//! Port of `carve_zlib` / `describe_transmit` in `solid_diff/extract.py`. The
-//! section framing (16-byte magic, sizes) is not trusted: we simply scan for
-//! zlib headers and try to inflate, which survives every framing variant seen
-//! in the corpus.
+//! The section framing (16-byte magic, sizes) is not trusted: we simply scan
+//! for zlib headers and try to inflate, which survives every framing variant
+//! seen in the corpus.
 
 use flate2::{Decompress, FlushDecompress, Status};
 

@@ -1,22 +1,22 @@
 # B-rep → mesh
 
-`solid_diff/brep2mesh.py` tessellates the Parasolid B-rep extracted from a
-SLDPRT (see PARASOLID.md) into a triangle mesh, pure Python (numpy + scipy).
+`solid-diff mesh` tessellates the Parasolid B-rep extracted from a SLDPRT
+(see PARASOLID.md) into a triangle mesh.
 
 ```sh
-python -m solid_diff.brep2mesh part.SLDPRT -o part.obj --stl part.stl [--tol 1e-4]
+solid-diff mesh part.SLDPRT -o part.obj --stl part.stl [--tol 1e-4] --stats
 ```
 
 ## How it works
 
-Per FACE node (`tess.py`):
+Per FACE node (`rust/src/tess.rs`):
 
 1. **Boundary loops** — walk `FACE.loop → LOOP.halfedge` (via the `backward`
    link, which empirically visits halfedges in chaining order), sampling each
    edge's 3D curve adaptively. Edges are sampled ONCE, shared by both
    adjacent faces via a two-pass `EdgeSampler` (pass 1 negotiates the finest
    spacing any face wants), so neighbors get bit-identical boundary points
-   and vertex welding closes the mesh. Curve evaluators (`geom.py`): LINE,
+   and vertex welding closes the mesh. Curve evaluators (`rust/src/geom/`): LINE,
    CIRCLE, ELLIPSE, B_CURVE (NURBS via de Boor), TRIMMED_CURVE, and
    INTERSECTION (via its CHART's precomputed sample points).
 2. **UV mapping** — invert the face's surface: PLANE, CYLINDER, CONE, SPHERE,
@@ -38,8 +38,10 @@ Per FACE node (`tess.py`):
    material-left heuristic with an empty-result flip as backstop.
 4. **Triangulation** — interior grid at a curvature-probed step (midpoint
    chord error vs tolerance), grid points within half a step of a boundary
-   segment dropped (T-junction prevention), metric-scaled scipy Delaunay,
-   triangles kept by centroid parity.
+   segment dropped (T-junction prevention), metric-scaled **constrained**
+   Delaunay (`spade`) with every boundary segment forced in as a constraint,
+   then trimmed by flood fill: start from one triangle and flip in/out at
+   each constraint crossing.
 5. **Back to 3D** — edge samples keep their exact shared 3D coordinates;
    added points are surface-evaluated. Triangles are wound outward: the XT
    outward normal is the parametric normal × surface-node sense × face sense
@@ -64,14 +66,14 @@ and two open sheet bodies where open edges are real geometry.
 
 Two styles, both fed from the same `Mesh`.
 
-**Translucent x-ray SVG** (`render.rs`, `render.py`): exact back-to-front
+**Translucent x-ray SVG** (`rust/src/render.rs`): exact back-to-front
 ordering via a BSP tree (crossing polygons split; auto-fallback to centroid
 depth sort beyond 12k triangles), real per-face colors (`SDL/TYSA_COLOUR`)
 with a `color_map={face_id: rgb}` override hook for diff rendering,
 feature-edge strokes (open edges + dihedral > 28°), orthographic or `--fov`
 perspective, key/fill lighting with interior (backface) tinting.
 
-**Matte isometric PNG** (`iso.rs`, Rust only): area-weighted random points
+**Matte isometric PNG** (`rust/src/iso.rs`): area-weighted random points
 are scattered over the triangles, projected isometrically and z-buffered
 with a 2×2 splat, then shaded two-sided Lambert
 (`0.22 + 0.78·|N·L|`) in one steel-blue hue on a transparent background.
@@ -84,9 +86,9 @@ axis extents, so nothing spills out of frame at any orientation.
 
 ## Known gaps
 
-- Delaunay is unconstrained; concave boundary corners can occasionally be
-  cut, leaving small boundary-edge counts (T-junction prevention and shared
-  edge sampling make this rare). A true CDT would finish the job.
+- Face-level orientation is the biggest remaining defect class (#21): on
+  NURBS-heavy parts roughly half of all shared edges have their two triangles
+  wound opposite each other.
 - Thread helices (swept/spun on B-curve profiles) tessellate but with elevated
   open-edge counts; 3_DOF_ARM_SEGMENT still shows a negative signed volume
   (orientation of one face class) — unresolved.

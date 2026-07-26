@@ -1,9 +1,8 @@
 # Status and remaining work
 
-Snapshot 2026-07-25, after the Rust port reached parity with the Python
-prototype. Numbers come from a census of the **full 1536-part PDM vault
-export** (`tools/census.py`) plus a 36-part Python/Rust parity run
-(`tools/parity.py`).
+Snapshot 2026-07-26. Numbers come from sweeps of the **full 1536-part PDM
+vault export** plus a 36-part working corpus (`samples/` + `vault/`), measured
+with the directed-edge check in `solid-diff mesh --stats`.
 
 ## Where we are
 
@@ -15,14 +14,14 @@ Windows and no commercial SDK, and produces meshes and renders:
         → surface/curve evaluation → tessellation → OBJ/STL/SVG
 ```
 
-Two implementations exist. **Rust (`rust/`) is the one to build on**; the
-Python (`solid_diff/`) is the reference prototype that proved the format and
-now serves as the cross-check oracle.
+Everything is the Rust crate in `rust/`. A Python prototype proved the format
+and acted as the cross-check oracle while the port was built; it has been
+removed, and the golden files it produced live on in `rust/tests/data/` as
+frozen ground truth that the Rust decoders are still tested against.
 
 ### Vault coverage (1536 files)
 
-Two full sweeps of the vault export: a Python structural census
-(`tools/census.py`) and a Rust mesh sweep (24-way parallel, 180 s per file).
+From a full sweep of the vault export.
 
 | outcome | files | share |
 |---|---|---|
@@ -39,9 +38,9 @@ is 641,978. Mesh quality at scale is the honest weak spot: only 7.6% of
 parts come out fully watertight and the median part has 92 open edges,
 which is what #7 (constrained Delaunay) and #5 are about.
 
-Notably the one file that OOM-killed the *Python* sweep at 37.8 GB (#1)
-takes Rust well under a second — it turns out to carry no geometry at all,
-so the OOM was a Python bug, not a hard part.
+Notably the one file that OOM-killed the old Python sweep at 37.8 GB (#1)
+takes well under a second here — it carries no geometry at all, so that OOM
+was a bug in the removed prototype, not a hard part.
 
 74,528 faces and 173,307 edges were surveyed. Everything present is
 evaluated exactly except two node types:
@@ -61,28 +60,28 @@ Storage location splits almost evenly between the older
 `Config-N-FeatureBodies/LocalBodies` (727) — both are handled, and neither
 name is hardcoded (streams are ranked by face count).
 
-### Rust vs Python parity (36-file corpus)
+### Mesh quality (36-part working corpus)
 
-| metric | result |
-|---|---|
-| files where both produce a mesh | 33 / 33 parseable (3 are OLE2, both reject) |
-| XT decode | **bit-identical**: 32,473 nodes, all fields hash-equal |
-| geometry evaluation | ≤ 4.3e-10 m over 2157 real evaluations |
-| extracted `.x_b` transmits | byte-identical |
-| surface area within 2% | 27 / 33 (worst remaining difference 4.8%) |
-| triangle count within 25% | 33 / 33 |
-| open edges (corpus total) | Python 12,987 · **Rust 12,711** |
-| speed | median **6× faster**, up to 98× on NURBS-heavy parts |
+Measured with the directed-edge check (#19): every undirected edge is
+classified once, so the counts do not overlap.
 
-Rust is not merely equivalent: it produces **fewer open edges** than Python
-across the corpus, and its renderer **fixes two bugs** in the Python one
-(see #8). Surface area is the headline comparison because it ignores
-orientation and so stays meaningful on open meshes; signed volume does not.
+| | before #20 | now |
+|---|---|---|
+| holes (edge used by one triangle) | 6,023 | **3,354** |
+| non-manifold (edge used by >2) | 8,405 | **98** |
+| winding mismatches | 7,854 | 10,468 |
 
-Where the two still differ by a few percent (`template`, the screw-mount
-nut, the socket-head screw, `13_570115-99`, `15_M83513_01-FN_PART7`,
-`17_NONE-42.step`), neither is verified correct — settling it needs a
-ground-truth mesh from a real kernel.
+Constrained Delaunay plus flood-fill trimming (#20) nearly halved the holes
+and all but eliminated non-manifold junctions. The rise in winding mismatches
+is disclosure rather than regression: with edges now actually meeting,
+orientation errors that used to present as holes surface as what they are.
+**No part is yet fully watertight**, and face-level orientation (#21) is the
+biggest remaining defect class.
+
+Historical: while the Python prototype existed, the two agreed to
+bit-identical XT decoding (32,473 nodes), geometry evaluation within
+4.3e-10 m over 2,157 evaluations, and byte-identical `.x_b` extraction. Rust
+was ~17x faster.
 
 ## Open work
 
@@ -90,10 +89,10 @@ All tracked as GitHub issues. Summary of what is left, worst first:
 
 ### Correctness
 
-- **[#1] Runaway memory on one vault part.**
-  `CVS-22055[TAM]_03202026__00000914_v2` drove the Python sweep to 37.8 GB
-  and was OOM-killed — the only file of 1536 we cannot read.
-  `tools/census.py` now isolates each file, but the blow-up is unfixed.
+- **[#1] One vault part carries no B-rep.**
+  `CVS-22055[TAM]_03202026__00000914_v2` has a 1-node stub partition and no
+  `LocalBodies` stream, so there is nothing to mesh. (It also OOM-killed the
+  removed Python prototype at 37.8 GB; that bug went with it.)
 - **[#5] Faces winding in both parameter directions still guess.** Mostly
   fixed: a periodic direction the loops do not cover has a provably-outside
   anchor in the gap, which took corpus open edges from 13,348 to 12,711 and

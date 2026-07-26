@@ -1,18 +1,21 @@
 //! Corpus test: parse every sample and vault part and compare the container /
-//! section / XT decoding against ground truth produced by the Python pipeline
-//! (`solid_diff` + `vendor/ps-parser`).
+//! section / XT decoding against recorded ground truth.
 //!
-//! `tests/data/golden.txt` was generated from Python; each line is either
+//! `tests/data/golden.txt` is a **frozen** snapshot captured from the original
+//! Python pipeline (`solid_diff` + `vendor/ps-parser`) while it was still the
+//! reference: 32,473 nodes across 115 transmits, every field hashed, and the
+//! Rust decoder reproduced all 185 lines exactly. That implementation has
+//! since been removed, so the file is no longer regenerable -- treat it as
+//! recorded ground truth. Each line is either
 //!   `<relpath> streams=N`             file-level summary
 //!   `<relpath> NOT_MODERN`            legacy OLE2 file
 //!   `  <stream>@<off> <kind> size=N nodes=M vals=<hash> NAME:count,...`
-//!   `  <stream>@<off> <kind> size=N ERR`   (Python refused to parse it)
+//!   `  <stream>@<off> <kind> size=N ERR`   (the reference refused it)
 //!
 //! `vals` is an FNV-1a 64 hash of a canonical dump of *every field value of
 //! every node* (floats as raw big-endian bits), so the check covers field
 //! decoding, not just node counts.
 //!
-//! Regenerate with `.venv/bin/python rust/tests/data/gen_golden.py`.
 //! Parts missing from the checkout (samples/*.SLDPRT are fetched, not
 //! committed) are skipped rather than failing.
 
