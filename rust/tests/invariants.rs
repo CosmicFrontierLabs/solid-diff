@@ -443,7 +443,11 @@ fn closed_form_geometry_agrees_with_the_file() {
 ///   rolling-ball reconstruction is wrong rather than merely coarse (#4).
 ///   This rose from 32 to 35 when #23 landed: the curves along blends became
 ///   accurate, so more sample points now land where the blend surface is
-///   wrong. Disclosure, not regression -- fixing #4 should clear it.
+///   wrong. Fixing the mirrored arc side (#4) cut the mean blend error from
+///   0.69 to 0.20 times the fillet radius without moving this count, because
+///   the residual still exceeds the tolerance here -- the count is pass/fail,
+///   not magnitude. What is left is a separate, smaller defect on
+///   SWEPT_SURF-supported blends.
 const APPROX_BUDGET: &[(&str, usize)] = &[("INTERSECTION", 11), ("BLENDED_EDGE", 35)];
 
 #[test]
@@ -634,9 +638,9 @@ fn mesh_vertices_lie_on_their_source_surface() {
 /// per-part output -- that would fight every legitimate improvement, since
 /// fixing a trimming bug changes triangle counts everywhere.
 const MESH_BUDGET: &[(&str, usize)] = &[
-    ("holes", 4109),
-    ("winding mismatches", 10093),
-    ("non-manifold", 33),
+    ("holes", 4092),
+    ("winding mismatches", 9587),
+    ("non-manifold", 25),
     ("parts that fail to mesh", 3),
 ];
 
