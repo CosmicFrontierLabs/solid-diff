@@ -299,7 +299,24 @@ pub(crate) fn split_vertices(
     dim: usize,
     rational: bool,
 ) -> Option<(Vec<P3>, Vec<f64>)> {
-    if dim < 3 || (rational && dim < 4) || verts.len() < dim {
+    split_vertices_nd(verts, dim, rational, false)
+}
+
+/// `dim` counts the stored components including the weight.
+///
+/// `allow_2d` is only set for curves living in a surface's parameter space
+/// (SP_CURVE), which carry two coordinates. It must stay off elsewhere: a 3D
+/// rational curve also has `dim = 3` once the weight is counted, and reading
+/// one as a parameter-space curve would flatten it onto z = 0.
+pub(crate) fn split_vertices_nd(
+    verts: &[f64],
+    dim: usize,
+    rational: bool,
+    allow_2d: bool,
+) -> Option<(Vec<P3>, Vec<f64>)> {
+    let coords = if rational { dim.checked_sub(1)? } else { dim };
+    let min = if allow_2d { 2 } else { 3 };
+    if !(min..=3).contains(&coords) || verts.len() < dim {
         return None;
     }
     let n = verts.len() / dim;
@@ -307,16 +324,17 @@ pub(crate) fn split_vertices(
     let mut w = Vec::with_capacity(n);
     for i in 0..n {
         let row = &verts[i * dim..i * dim + dim];
+        let z = if coords == 3 { row[2] } else { 0.0 };
         if rational {
-            let wi = row[3];
+            let wi = row[coords];
             if wi == 0.0 || !wi.is_finite() {
                 return None;
             }
-            // Parasolid stores rational verts as (wx, wy, wz, w).
-            cp.push([row[0] / wi, row[1] / wi, row[2] / wi]);
+            // Parasolid stores rational verts as (w*coords..., w).
+            cp.push([row[0] / wi, row[1] / wi, z / wi]);
             w.push(wi);
         } else {
-            cp.push([row[0], row[1], row[2]]);
+            cp.push([row[0], row[1], z]);
             w.push(1.0);
         }
     }
@@ -336,12 +354,22 @@ pub struct Nurbs {
 
 impl Nurbs {
     fn from_node(graph: &Graph, bcurve: &Node) -> Option<Self> {
+        Self::build(graph, bcurve, false)
+    }
+
+    /// A curve whose control points are `(u, v)` in some surface's parameter
+    /// space rather than points in space.
+    fn from_node_uv(graph: &Graph, bcurve: &Node) -> Option<Self> {
+        Self::build(graph, bcurve, true)
+    }
+
+    fn build(graph: &Graph, bcurve: &Node, uv: bool) -> Option<Self> {
         let nc = graph.deref(bcurve, "nurbs")?;
         let degree = usize::try_from(nc.i64("degree")?).ok()?;
         let dim = usize::try_from(nc.i64("vertex_dim")?).ok()?;
         let rational = nc.bool("rational");
         let verts = graph.deref(nc, "bspline_vertices")?.f64_vec("vertices")?;
-        let (cp, w) = split_vertices(&verts, dim, rational)?;
+        let (cp, w) = split_vertices_nd(&verts, dim, rational, uv)?;
         let knots = graph.deref(nc, "knots")?.f64_vec("knots")?;
         let mult = graph.deref(nc, "knot_mult")?.i64_vec("mult")?;
         let knots = expand_knots(&knots, &mult)?;
@@ -422,6 +450,69 @@ impl Curve for Nurbs {
 
     fn full_range(&self) -> Option<(f64, f64)> {
         Some((self.t0, self.t1))
+    }
+}
+
+// ── SP_CURVE (curve in a surface's parameter space) ─────────────────────────
+
+/// A B-curve whose control points are `(u, v)` in a surface's parameter space,
+/// lifted to 3D through that surface.
+///
+/// Previously unsupported, so these edges fell back to a straight chord
+/// between their vertices (#3). Nothing was missing from the file: the surface
+/// and the parameter-space curve are both stored.
+pub struct SpCurve {
+    surf: Box<dyn Surface>,
+    uv: Nurbs,
+}
+
+impl SpCurve {
+    fn at(&self, t: f64) -> P3 {
+        let q = self.uv.eval(t);
+        self.surf.eval([q[0], q[1]])
+    }
+}
+
+impl Curve for SpCurve {
+    fn eval(&self, t: f64) -> P3 {
+        self.at(t)
+    }
+
+    fn inv(&self, p: P3) -> f64 {
+        // Sample then bracket, as for a plain NURBS curve: the parameter-space
+        // curve gives no closed-form inverse once the surface is applied.
+        let n = (8 * self.uv.cp.len()).max(32);
+        let (t0, t1) = (self.uv.t0, self.uv.t1);
+        let step = (t1 - t0) / (n - 1) as f64;
+        let mut best = 0usize;
+        let mut bestd = f64::INFINITY;
+        for i in 0..n {
+            let d = dist(self.at(t0 + step * i as f64), p);
+            if d < bestd {
+                bestd = d;
+                best = i;
+            }
+        }
+        let mut lo = t0 + step * best.saturating_sub(1) as f64;
+        let mut hi = t0 + step * (best + 1).min(n - 1) as f64;
+        for _ in 0..40 {
+            let m1 = lo + (hi - lo) / 3.0;
+            let m2 = hi - (hi - lo) / 3.0;
+            if dist(self.at(m1), p) < dist(self.at(m2), p) {
+                hi = m2;
+            } else {
+                lo = m1;
+            }
+        }
+        (lo + hi) / 2.0
+    }
+
+    fn period(&self) -> Option<f64> {
+        self.uv.period()
+    }
+
+    fn full_range(&self) -> Option<(f64, f64)> {
+        Some((self.uv.t0, self.uv.t1))
     }
 }
 
@@ -743,6 +834,11 @@ pub fn make_curve(graph: &Graph, node: &Node) -> Option<Box<dyn Curve>> {
         "B_CURVE" => Nurbs::from_node(graph, node).map(|c| Box::new(c) as Box<dyn Curve>),
         "TRIMMED_CURVE" => {
             TrimmedCurve::from_node(graph, node).map(|c| Box::new(c) as Box<dyn Curve>)
+        }
+        "SP_CURVE" => {
+            let surf = super::surfaces::make_surface(graph, graph.deref(node, "surface")?)?;
+            let uv = Nurbs::from_node_uv(graph, graph.deref(node, "b_curve")?)?;
+            Some(Box::new(SpCurve { surf, uv }) as Box<dyn Curve>)
         }
         "INTERSECTION" => {
             let chart = graph.deref(node, "chart")?;

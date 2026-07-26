@@ -1277,3 +1277,124 @@ fn blend_does_not_mirror_across_the_spine() {
         "the point actually on the arc must round trip"
     );
 }
+
+// ── SP_CURVE: a curve in a surface's parameter space (#3) ───────────────────
+
+/// A degree-1 curve in `(u, v)` on a cylinder. With `v` held constant and `u`
+/// sweeping a quarter turn, the 3D result is exactly a quarter circle at that
+/// height -- so the answer is known without any reference data.
+fn sp_curve_on_cylinder(r: f64, u0: f64, u1: f64, v: f64) -> Vec<Node> {
+    vec![
+        node(
+            1,
+            "SP_CURVE",
+            vec![("surface", ptr(2)), ("b_curve", ptr(3))],
+        ),
+        node(
+            2,
+            "CYLINDER",
+            vec![
+                ("pvec", v3(0.0, 0.0, 0.0)),
+                ("axis", v3(0.0, 0.0, 1.0)),
+                ("radius", f(r)),
+                ("x_axis", v3(1.0, 0.0, 0.0)),
+            ],
+        ),
+        node(3, "B_CURVE", vec![("nurbs", ptr(4))]),
+        node(
+            4,
+            "NURBS_CURVE",
+            vec![
+                ("degree", i(1)),
+                ("n_vertices", i(2)),
+                ("vertex_dim", i(2)), // (u, v) -- two coordinates, not three
+                ("rational", b(false)),
+                ("closed", b(false)),
+                ("periodic", b(false)),
+                ("bspline_vertices", ptr(5)),
+                ("knots", ptr(6)),
+                ("knot_mult", ptr(7)),
+            ],
+        ),
+        node(
+            5,
+            "BSPLINE_VERTICES",
+            vec![("vertices", arr_f(&[u0, v, u1, v]))],
+        ),
+        node(6, "KNOT_SET", vec![("knots", arr_f(&[0.0, 1.0]))]),
+        node(7, "KNOT_MULT", vec![("mult", arr_i(&[2, 2]))]),
+    ]
+}
+
+#[test]
+fn sp_curve_lifts_parameter_space_onto_its_surface() {
+    let r = 3.0;
+    let (_g, c) = curve_of(
+        sp_curve_on_cylinder(r, 0.0, std::f64::consts::FRAC_PI_2, 1.5),
+        1,
+    );
+
+    let (t0, t1) = c.full_range().expect("range");
+    let mut worst: f64 = 0.0;
+    for k in 0..=40 {
+        let p = c.eval(t0 + (t1 - t0) * (k as f64 / 40.0));
+        // Every point must sit on the cylinder, at the height the v row fixed.
+        let radial = (p[0] * p[0] + p[1] * p[1]).sqrt();
+        worst = worst.max((radial - r).abs()).max((p[2] - 1.5).abs());
+    }
+    assert!(worst < 1e-9, "SP_CURVE left its cylinder by {worst:.3e}");
+
+    // A quarter turn, so the ends are 90 degrees apart on the circle.
+    close3(c.eval(t0), [r, 0.0, 1.5], 1e-9);
+    close3(c.eval(t1), [0.0, r, 1.5], 1e-9);
+}
+
+#[test]
+fn sp_curve_inverts_back_to_its_own_parameter() {
+    let r = 3.0;
+    let (_g, c) = curve_of(
+        sp_curve_on_cylinder(r, 0.0, std::f64::consts::FRAC_PI_2, 1.5),
+        1,
+    );
+    let (t0, t1) = c.full_range().expect("range");
+    for k in 1..8 {
+        let t = t0 + (t1 - t0) * (k as f64 / 8.0);
+        let p = c.eval(t);
+        assert!(
+            dist3(c.eval(c.inv(p)), p) < 1e-6,
+            "inv/eval round trip failed at t = {t}"
+        );
+    }
+}
+
+#[test]
+fn three_dimensional_rational_curves_are_not_read_as_parameter_space() {
+    // dim = 3 with rational set is a 2D rational curve; dim = 4 is a 3D one.
+    // Confusing the two would flatten real curves onto z = 0, so the plain
+    // (non-SP) path must still refuse a 2-coordinate control net.
+    let verts = [0.0, 0.0, 1.0, 1.0, 0.0, 1.0];
+    let nodes = vec![
+        node(1, "B_CURVE", vec![("nurbs", ptr(2))]),
+        node(
+            2,
+            "NURBS_CURVE",
+            vec![
+                ("degree", i(1)),
+                ("n_vertices", i(2)),
+                ("vertex_dim", i(2)),
+                ("rational", b(false)),
+                ("bspline_vertices", ptr(3)),
+                ("knots", ptr(4)),
+                ("knot_mult", ptr(5)),
+            ],
+        ),
+        node(3, "BSPLINE_VERTICES", vec![("vertices", arr_f(&verts))]),
+        node(4, "KNOT_SET", vec![("knots", arr_f(&[0.0, 1.0]))]),
+        node(5, "KNOT_MULT", vec![("mult", arr_i(&[2, 2]))]),
+    ];
+    let g = Graph::new(nodes);
+    assert!(
+        make_curve(&g, g.get(1).unwrap()).is_none(),
+        "a bare B_CURVE with a 2D control net must be refused, not flattened"
+    );
+}
