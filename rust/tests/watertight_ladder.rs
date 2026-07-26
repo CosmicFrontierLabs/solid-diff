@@ -337,3 +337,92 @@ fn rung2_cylinder_is_watertight() {
     let g = solid_cylinder(r, h);
     assert_watertight(&g, "a solid cylinder", std::f64::consts::PI * r * r * h);
 }
+
+// ── rung 3: a pole ──────────────────────────────────────────────────────────
+
+/// A sphere cut by a plane: a spherical cap on a disc.
+///
+/// Adds the case where the parameter domain runs into a pole, so one edge of
+/// the UV rectangle collapses to a single point in space.
+fn spherical_cap(r: f64, z_cut: f64) -> Graph {
+    let mut b = Brep::new();
+    let axis = [0.0, 0.0, 1.0];
+    let xax = [1.0, 0.0, 0.0];
+    let rc = (r * r - z_cut * z_cut).sqrt(); // radius of the cut circle
+
+    let v = b.vertex([rc, 0.0, z_cut]);
+    let circ = b.add(
+        "CIRCLE",
+        vec![
+            ("centre", v3([0.0, 0.0, z_cut])),
+            ("normal", v3(axis)),
+            ("x_axis", v3(xax)),
+            ("radius", Value::F64(rc)),
+        ],
+    );
+    let (h_cap, h_disc) = b.edge(circ, v, v);
+
+    let s_sphere = b.add(
+        "SPHERE",
+        vec![
+            ("centre", v3([0.0, 0.0, 0.0])),
+            ("axis", v3(axis)),
+            ("x_axis", v3(xax)),
+            ("radius", Value::F64(r)),
+        ],
+    );
+    let s_disc = b.plane([0.0, 0.0, z_cut], [0.0, 0.0, -1.0], xax);
+
+    b.face(s_sphere, &[h_cap]);
+    b.face(s_disc, &[h_disc]);
+    b.graph()
+}
+
+/// Currently fails with 3 open edges, all at the seam -- the same defect as
+/// rung 2, on a surface that also has a pole. See #39.
+#[test]
+#[ignore = "known failure: periodic faces do not close across the seam (#39)"]
+fn rung3_spherical_cap_is_watertight() {
+    let (r, z) = (1.0, 0.5);
+    let h = r - z; // cap height
+    let vol = std::f64::consts::PI * h * h * (r - h / 3.0);
+    assert_watertight(&spherical_cap(r, z), "a spherical cap", vol);
+}
+
+// ── rung 4: two periodic directions ─────────────────────────────────────────
+
+/// A whole torus: one face, no edges at all, periodic in both directions.
+///
+/// The hardest trimming case in the format -- there is no boundary to anchor
+/// against and no open direction to escape through.
+fn whole_torus(major: f64, minor: f64) -> Graph {
+    let mut b = Brep::new();
+    let s = b.add(
+        "TORUS",
+        vec![
+            ("centre", v3([0.0, 0.0, 0.0])),
+            ("axis", v3([0.0, 0.0, 1.0])),
+            ("x_axis", v3([1.0, 0.0, 0.0])),
+            ("major_radius", Value::F64(major)),
+            ("minor_radius", Value::F64(minor)),
+        ],
+    );
+    let f = b.add(
+        "FACE",
+        vec![("surface", ptr(s)), ("sense", Value::Char("+".into()))],
+    );
+    let _ = f;
+    b.graph()
+}
+
+/// Passes, which is the surprise: a torus is periodic in both directions and
+/// still closes. The difference from rungs 2 and 3 is that it carries no
+/// loops at all, so nothing constrains the boundary and the grid covers the
+/// whole domain. The seam defect is specific to a face that both wraps *and*
+/// has boundary loops.
+#[test]
+fn rung4_torus_is_watertight() {
+    let (rmaj, rmin) = (3.0, 1.0);
+    let vol = 2.0 * std::f64::consts::PI * std::f64::consts::PI * rmaj * rmin * rmin;
+    assert_watertight(&whole_torus(rmaj, rmin), "a whole torus", vol);
+}
