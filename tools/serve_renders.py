@@ -483,6 +483,14 @@ class Handler(BaseHTTPRequestHandler):
     # Keep-alive: without it every asset is a fresh connection, which is what
     # exhausts the backlog above. Every response here sets Content-Length.
     protocol_version = "HTTP/1.1"
+    # ...but an idle keep-alive connection must not live forever. Each one
+    # pins a thread, and anything upstream that reads to EOF rather than
+    # honouring Content-Length hangs until *its* timeout instead of ours --
+    # which a proxy reports as the forward timing out. This is *idle* time
+    # between requests, so it never interrupts a slow render; three seconds is
+    # far longer than a page's burst needs and short enough to stay under any
+    # upstream probe timeout.
+    timeout = 3
 
     def log_message(self, fmt, *args):
         sys.stderr.write("  %s\n" % (fmt % args))
