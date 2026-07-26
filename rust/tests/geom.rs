@@ -1121,3 +1121,84 @@ fn polyline_inv_projects_onto_segments_not_samples() {
 fn dist3(a: P3, b: P3) -> f64 {
     ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
 }
+
+// ── tracing an edge that carries no curve (#25) ─────────────────────────────
+
+fn cyl_plane_pair(r: f64, tilt: f64) -> solid_diff::geom::curves::SurfacePair {
+    let cyl = node(
+        1,
+        "CYLINDER",
+        vec![
+            ("pvec", v3(0.0, 0.0, 0.0)),
+            ("axis", v3(0.0, 0.0, 1.0)),
+            ("radius", f(r)),
+            ("x_axis", v3(1.0, 0.0, 0.0)),
+        ],
+    );
+    let pl = plane_node(
+        2,
+        [0.0, 0.0, 0.0],
+        [0.0, tilt.sin(), tilt.cos()],
+        [1.0, 0.0, 0.0],
+    );
+    let g = Graph::new(vec![cyl, pl]);
+    solid_diff::geom::curves::SurfacePair {
+        a: make_surface(&g, g.get(1).unwrap()).unwrap(),
+        b: make_surface(&g, g.get(2).unwrap()).unwrap(),
+    }
+}
+
+#[test]
+fn trace_follows_the_intersection_not_the_chord() {
+    // Cylinder of radius 2 about z, cut by z = 0: the intersection is exactly
+    // the circle of radius 2. Trace a quarter turn and check every point.
+    let r = 2.0;
+    let pair = cyl_plane_pair(r, 0.0);
+    let a = [r, 0.0, 0.0];
+    let b = [0.0, r, 0.0];
+    let pts = pair.trace(a, b, 32).expect("trace should succeed");
+
+    let mut worst: f64 = 0.0;
+    for p in &pts {
+        let radial = (p[0] * p[0] + p[1] * p[1]).sqrt();
+        worst = worst.max((radial - r).abs()).max(p[2].abs());
+    }
+    assert!(worst < 1e-6, "traced points off the circle by {worst:.3e}");
+
+    // Arc, not chord: a quarter circle is pi*r/2 long, the chord is r*sqrt(2).
+    let len: f64 = pts.windows(2).map(|w| dist3(w[0], w[1])).sum();
+    let arc = std::f64::consts::FRAC_PI_2 * r;
+    assert!(
+        (len - arc).abs() < arc * 0.01,
+        "traced length {len:.4} is not the arc length {arc:.4}"
+    );
+    assert!(
+        len > r * std::f64::consts::SQRT_2 * 1.05,
+        "traced the chord"
+    );
+}
+
+#[test]
+fn trace_starts_and_ends_on_the_given_vertices() {
+    let pair = cyl_plane_pair(1.5, 0.3);
+    let a = pair.snap([1.5, 0.0, 0.0], 1.0);
+    let b = pair.snap([0.0, 1.5, -0.45], 1.0);
+    let pts = pair.trace(a, b, 32).expect("trace");
+    assert!(dist3(pts[0], a) < 1e-12);
+    assert!(dist3(*pts.last().unwrap(), b) < 1e-12);
+}
+
+#[test]
+fn trace_declines_when_surfaces_are_parallel() {
+    // Two parallel planes never meet: there is no curve to trace, and the
+    // tracer must say so rather than wander.
+    let g = Graph::new(vec![
+        plane_node(1, [0.0, 0.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]),
+        plane_node(2, [0.0, 0.0, 1.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]),
+    ]);
+    let pair = solid_diff::geom::curves::SurfacePair {
+        a: make_surface(&g, g.get(1).unwrap()).unwrap(),
+        b: make_surface(&g, g.get(2).unwrap()).unwrap(),
+    };
+    assert!(pair.trace([0.0; 3], [1.0, 0.0, 0.0], 32).is_none());
+}
