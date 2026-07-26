@@ -143,9 +143,11 @@ Fixed since the last revision of this document:
 
 ### Product
 
-- **[#11] The actual diff renderer does not exist yet.** Everything upstream
-  is in place: stable `FACE_ID`s survive parsing and the renderer takes a
-  `color_map: face_id → rgb` override.
+- **[#11] The actual diff renderer does not exist yet.** The renderer takes a
+  `color_map: face_id → rgb` override, so the rendering half is ready, but
+  faces must be matched **geometrically**: measured across real vault
+  revisions, no stored attribute identifies a face from one revision to the
+  next (see #11).
 - **[#12] No assembly (`.SLDASM`) support**; the vault holds 759 of them.
 
 Closed as out of scope: **[#13]** pre-2015 OLE2 files (see `CLAUDE.md`).

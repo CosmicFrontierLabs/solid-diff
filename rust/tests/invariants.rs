@@ -685,3 +685,55 @@ fn corpus_mesh_quality_does_not_regress() {
         over.join("\n")
     );
 }
+
+/// A face id that is not unique per face cannot identify anything.
+///
+/// `FACE_ID` is a tuple spread over several arrays, and its leading entries
+/// are a feature id and creation timestamp shared by every face that feature
+/// made. Reading only the first element -- which is what this used to do --
+/// returned that shared prefix: one corpus part with 132 faces yielded 6
+/// distinct "ids". Nothing downstream can match faces with that.
+#[test]
+fn face_ids_actually_identify_faces() {
+    let graphs = graphs();
+    if graphs.is_empty() {
+        return;
+    }
+    let mut worst: Option<(String, usize, usize)> = None;
+    let mut checked = 0usize;
+    for (name, g) in &graphs {
+        let faces = g.by_type("FACE");
+        let ids: std::collections::HashSet<u64> =
+            faces.iter().filter_map(|f| g.face_stable_id(f)).collect();
+        let with_id = faces
+            .iter()
+            .filter(|f| g.face_stable_id(f).is_some())
+            .count();
+        if with_id < 8 {
+            continue; // too few to say anything about collisions
+        }
+        checked += 1;
+        let ratio = ids.len() as f64 / with_id as f64;
+        if worst
+            .as_ref()
+            .is_none_or(|(_, u, w)| ratio < *u as f64 / *w as f64)
+        {
+            worst = Some((name.clone(), ids.len(), with_id));
+        }
+    }
+    let Some((name, unique, total)) = worst else {
+        return;
+    };
+    eprintln!("least distinct face ids: {unique}/{total} on {name} ({checked} parts)");
+    // Half, not all: SolidWorks sometimes writes a placeholder tuple whose
+    // identifying components are zero, and every face it applies to then
+    // shares it -- one sample has 12 planes on `[81, 46, 1530067979, 0, 0, 0,
+    // 0][230, 0]`. That is a limit of the data. The bug this guards against
+    // looked nothing like it: reading the shared feature prefix gave 6 ids for
+    // 132 faces, under 5%.
+    assert!(
+        unique * 2 >= total,
+        "{name}: only {unique} distinct ids across {total} faces carrying one -- \
+         the id is a shared prefix, not a face identity"
+    );
+}
