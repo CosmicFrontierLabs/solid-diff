@@ -986,6 +986,149 @@ fn grid_step(surf: &dyn Surface, lo: P2, hi: P2, tol: f64) -> P2 {
     steps
 }
 
+/// Join two rim loops into one closed loop through the seam.
+///
+/// A face that wraps a whole period is bounded, in Parasolid, by two loops
+/// that are each closed in 3D but leave a gap in 2D: the cylinder's two rims,
+/// with nothing joining them across the parameter seam. The trimmer then has
+/// no boundary at either end of the period and the wedge from the last column
+/// round to the seam is never filled -- a slit down the side of every cylinder
+/// and cone (#39).
+///
+/// OCCT calls this a missing seam and repairs the topology before meshing
+/// (`ShapeFix_Face::FixMissingSeam`), joining the wires with seam edges so the
+/// 2D region is an ordinary closed polygon. This does the same to the sampled
+/// loops: walk one rim up the period, cross to the other along the seam, walk
+/// it back, and cross home. The two crossings are the same line in space and
+/// are given *identical* 3D points, so they weld to each other and contribute
+/// no boundary of their own.
+///
+/// Declines unless the shape is unambiguous: exactly two loops, a period in
+/// this direction, both loops covering essentially all of it, and the two
+/// sitting at different places in the other parameter.
+fn join_seam(
+    loops_uv: &mut Vec<Vec<P2>>,
+    loops3d: &mut Vec<Vec<P3>>,
+    surf: &dyn Surface,
+    dim: usize,
+) -> bool {
+    let Some(period) = (if dim == 0 {
+        surf.period_u()
+    } else {
+        surf.period_v()
+    }) else {
+        return false;
+    };
+    if loops_uv.len() != 2 || loops_uv[0].len() < 3 || loops_uv[1].len() < 3 {
+        return false;
+    }
+    let other = 1 - dim;
+    let span = |lp: &Vec<P2>| -> f64 {
+        let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+        for q in lp {
+            lo = lo.min(q[dim]);
+            hi = hi.max(q[dim]);
+        }
+        hi - lo
+    };
+    let mean_other =
+        |lp: &Vec<P2>| -> f64 { lp.iter().map(|q| q[other]).sum::<f64>() / lp.len() as f64 };
+    // Each rim must go essentially all the way round. The closing duplicate is
+    // dropped when the loop is sampled, so a full turn is short by one step.
+    for lp in loops_uv.iter() {
+        let step = period / lp.len() as f64;
+        if span(lp) < period - step * 1.5 {
+            return false;
+        }
+    }
+    let (v0, v1) = (mean_other(&loops_uv[0]), mean_other(&loops_uv[1]));
+    if (v1 - v0).abs() <= 0.0 {
+        return false; // same rim twice: nothing to bridge
+    }
+
+    // Rim 0 is walked up the period and rim 1 back down it, so the circuit
+    // closes: up one rim, across the seam, back along the other, home.
+    let mut a_uv = loops_uv[0].clone();
+    let mut a_3d = loops3d[0].clone();
+    let mut b_uv = loops_uv[1].clone();
+    let mut b_3d = loops3d[1].clone();
+    let ascending = |lp: &Vec<P2>| lp[lp.len() - 1][dim] > lp[0][dim];
+    if !ascending(&a_uv) {
+        a_uv.reverse();
+        a_3d.reverse();
+    }
+    if ascending(&b_uv) {
+        b_uv.reverse();
+        b_3d.reverse();
+    }
+
+    // The two rims are sampled independently and their phases need not agree,
+    // so slide rim 1 until the two start at the same parameter. Then both
+    // occupy [lo, lo + period) and the circuit is a plain rectangle in 2D.
+    let low = |lp: &Vec<P2>| lp.iter().map(|q| q[dim]).fold(f64::INFINITY, f64::min);
+    let (lo_u, b_lo) = (low(&a_uv), low(&b_uv));
+    for q in b_uv.iter_mut() {
+        q[dim] -= b_lo - lo_u;
+    }
+    let hi_u = lo_u + period;
+
+    // The crossing, evaluated once and reused in both directions so the two
+    // copies are literally the same points and weld to each other.
+    const SEAM_STEPS: usize = 12;
+    let seam: Vec<(f64, P3)> = (1..SEAM_STEPS)
+        .map(|k| {
+            let t = k as f64 / SEAM_STEPS as f64;
+            let v = v0 + (v1 - v0) * t;
+            let mut uv = [0.0; 2];
+            uv[dim] = lo_u;
+            uv[other] = v;
+            (v, surf.eval(uv))
+        })
+        .collect();
+
+    let mut uv_out: Vec<P2> = Vec::with_capacity(a_uv.len() + b_uv.len() + 2 * SEAM_STEPS);
+    let mut p3_out: Vec<P3> = Vec::with_capacity(uv_out.capacity());
+
+    // Rim 0, ascending, then the wrap point: the same place in space as its
+    // own start, one period along.
+    uv_out.extend_from_slice(&a_uv);
+    p3_out.extend_from_slice(&a_3d);
+    let mut wrap = a_uv[0];
+    wrap[dim] = hi_u;
+    uv_out.push(wrap);
+    p3_out.push(a_3d[0]);
+
+    // Across at the far end.
+    for (v, p) in &seam {
+        let mut uv = [0.0; 2];
+        uv[dim] = hi_u;
+        uv[other] = *v;
+        uv_out.push(uv);
+        p3_out.push(*p);
+    }
+
+    // Rim 1, descending, entered at its own wrap point.
+    let mut bwrap = b_uv[b_uv.len() - 1];
+    bwrap[dim] = hi_u;
+    uv_out.push(bwrap);
+    p3_out.push(b_3d[b_3d.len() - 1]);
+    uv_out.extend_from_slice(&b_uv);
+    p3_out.extend_from_slice(&b_3d);
+
+    // And home, the same seam points in the other order.
+    for (v, p) in seam.iter().rev() {
+        let mut uv = [0.0; 2];
+        uv[dim] = lo_u;
+        uv[other] = *v;
+        uv_out.push(uv);
+        p3_out.push(*p);
+    }
+
+    *loops_uv = vec![uv_out];
+    *loops3d = vec![p3_out];
+    true
+}
+
 /// Angle between the two chords meeting at `b`, in radians.
 fn turn_angle(a: P3, b: P3, c: P3) -> f64 {
     let (u, v) = (sub(b, a), sub(c, b));
@@ -1155,6 +1298,16 @@ fn tessellate_face(
             }
         }
     }
+    // Repair a missing seam before anything measures the domain: two rims
+    // closed in 3D but open in 2D become one closed loop (#39).
+    if !used_shim {
+        for dim in 0..2 {
+            if join_seam(&mut loops_uv, &mut loops3d, surf.as_ref(), dim) {
+                break;
+            }
+        }
+    }
+
     if loops_uv.is_empty()
         && !(surf.period_u().is_some() && surf.period_v().is_some())
         && !used_shim
