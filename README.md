@@ -20,6 +20,13 @@ surface's parameters and the extent of the boundary -- because SolidWorks'
 per-face ids turn out to be a feature-provenance chain that no face survives
 an edit with.
 
+Give `diff` a `.gif` and it renders a turntable instead of a still: a full
+turn about the vertical axis, then a tumble, both ending where they began so
+the loop is seamless. `since` walks a PDM backup at any depth, groups the
+revisions of each part and compares the newest against the last one from
+before the cutoff, reading dates out of each file's `dcterms:modified` so that
+copying the backup around does not disturb them.
+
 Everything lives in the Rust crate under `rust/`. The tests assert invariants
 the part files state about themselves rather than any recorded reference
 output — see `rust/tests/invariants.rs`. For coverage numbers and every known
@@ -36,6 +43,8 @@ $R mesh    part.SLDPRT -o part.obj --stl part.stl --stats
 $R render  *.SLDPRT -o sheet.svg --size 360     # translucent x-ray SVG
 $R iso     *.SLDPRT -o sheet.png --size 420     # matte isometric PNG
 $R diff    old.SLDPRT new.SLDPRT -o diff.png    # what changed between revisions
+$R diff    old.SLDPRT new.SLDPRT -o diff.gif    # ...as a looping turntable
+$R since   /pdm/backup --since 2026-07-01 -o out/   # everything that changed
 ```
 
 Two rendering styles, for different jobs:

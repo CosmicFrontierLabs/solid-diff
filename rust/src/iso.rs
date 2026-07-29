@@ -259,35 +259,47 @@ pub fn render_iso_scaled(mesh: &Mesh, opts: &IsoOptions) -> (Image, f64) {
 
     let rc = camera(opts.az, opts.el);
 
-    // Fit to the *projected* silhouette rather than the model's axis extents:
-    // a shape can be much wider on screen than along any one axis, and
-    // normalising by axis extent alone lets corners spill out of frame.
     let (lo, hi) = opts.frame.unwrap_or_else(|| mesh.bounds());
     let centre = [
         (lo[0] + hi[0]) / 2.0,
         (lo[1] + hi[1]) / 2.0,
         (lo[2] + hi[2]) / 2.0,
     ];
-    let (mut xmin, mut xmax, mut ymin, mut ymax) = (
-        f64::INFINITY,
-        f64::NEG_INFINITY,
-        f64::INFINITY,
-        f64::NEG_INFINITY,
-    );
-    for v in &mesh.vertices {
-        let p = apply(&rc, sub(*v, centre));
-        xmin = xmin.min(p[0]);
-        xmax = xmax.max(p[0]);
-        ymin = ymin.min(p[1]);
-        ymax = ymax.max(p[1]);
-    }
     let margin = opts.margin.clamp(0.0, 0.45);
     let usable = size as f64 * (1.0 - 2.0 * margin);
-    let extent = (xmax - xmin).max(ymax - ymin).max(1e-30);
-    // Pixels per model unit, and the projected centre we pivot around.
-    let px_per_unit = usable / extent;
-    let cx = (xmin + xmax) / 2.0;
-    let cy = (ymin + ymax) / 2.0;
+    let (px_per_unit, cx, cy) = if opts.frame.is_some() {
+        // A caller that supplied a frame wants successive renders to line up,
+        // and the silhouette fit below cannot do that: a shape's projected
+        // width changes as it turns, so fitting it per frame makes a turntable
+        // breathe and drift. Fit the bounding sphere of the frame instead --
+        // its radius is the same from every direction, so the scale is fixed
+        // and the centre stays at the origin.
+        let r = (0..3)
+            .map(|i| (hi[i] - lo[i]) * 0.5)
+            .fold(0.0f64, |a, b| a + b * b)
+            .sqrt()
+            .max(1e-30);
+        (usable / (2.0 * r), 0.0, 0.0)
+    } else {
+        // Fit the projected silhouette: a shape can be much wider on screen
+        // than along any one axis, and normalising by axis extent alone lets
+        // corners spill out of frame.
+        let (mut xmin, mut xmax, mut ymin, mut ymax) = (
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+        );
+        for v in &mesh.vertices {
+            let p = apply(&rc, sub(*v, centre));
+            xmin = xmin.min(p[0]);
+            xmax = xmax.max(p[0]);
+            ymin = ymin.min(p[1]);
+            ymax = ymax.max(p[1]);
+        }
+        let extent = (xmax - xmin).max(ymax - ymin).max(1e-30);
+        (usable / extent, (xmin + xmax) / 2.0, (ymin + ymax) / 2.0)
+    };
     let light = {
         let l = [-0.4, 0.55, 0.8];
         let n = norm(l);

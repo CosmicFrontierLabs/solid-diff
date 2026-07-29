@@ -33,6 +33,14 @@ use crate::mesh::Mesh;
 use crate::value::{Node, NodeId};
 
 const MAX_EDGE_SAMPLES: usize = 1024;
+/// Largest turn permitted between consecutive facets, in radians (~18 deg).
+///
+/// Chord tolerance alone is relative to the whole part, so a 1 mm hole in a
+/// 180 mm casting was resolved with five or six segments and rendered as a
+/// polygon. Bounding the turn as well puts a floor of about twenty segments
+/// on any full circle whatever its size, which is what every kernel calls
+/// angular deflection and what we were missing.
+const MAX_TURN: f64 = 0.45;
 const MAX_GRID: usize = 96;
 
 /// Per-face cost reporting, enabled with `SOLID_DIFF_TRACE=1`.
@@ -319,6 +327,7 @@ impl EdgeSampler {
                     // chordal deviation at segment midpoints
                     let mut dev: f64 = 0.0;
                     let mut seg: f64 = 0.0;
+                    let mut turn: f64 = 0.0;
                     for i in 0..n {
                         let ta = t0 + (t1 - t0) * (i as f64 / n as f64);
                         let tb = t0 + (t1 - t0) * ((i + 1) as f64 / n as f64);
@@ -330,8 +339,11 @@ impl EdgeSampler {
                         ];
                         dev = dev.max(dist(mid, chord));
                         seg = seg.max(dist(pts[i], pts[i + 1]));
+                        if i > 0 {
+                            turn = turn.max(turn_angle(pts[i - 1], pts[i], pts[i + 1]));
+                        }
                     }
-                    if (dev <= tol && seg <= spacing) || n >= MAX_EDGE_SAMPLES {
+                    if (dev <= tol && seg <= spacing && turn <= MAX_TURN) || n >= MAX_EDGE_SAMPLES {
                         break;
                     }
                     n *= 2;
@@ -942,6 +954,7 @@ fn grid_step(surf: &dyn Surface, lo: P2, hi: P2, tol: f64) -> P2 {
         let mut n = 4usize;
         while n < MAX_GRID {
             let mut dev: f64 = 0.0;
+            let mut turn: f64 = 0.0;
             for i in 0..n {
                 let ta = lo[dim] + span * (i as f64 / n as f64);
                 let tb = lo[dim] + span * ((i + 1) as f64 / n as f64);
@@ -961,8 +974,9 @@ fn grid_step(surf: &dyn Surface, lo: P2, hi: P2, tol: f64) -> P2 {
                     (pa[2] + pb[2]) / 2.0,
                 ];
                 dev = dev.max(dist(pm, chord));
+                turn = turn.max(turn_angle(pa, pm, pb));
             }
-            if dev <= tol {
+            if dev <= tol && turn <= MAX_TURN {
                 break;
             }
             n *= 2;
@@ -970,6 +984,16 @@ fn grid_step(surf: &dyn Surface, lo: P2, hi: P2, tol: f64) -> P2 {
         steps[dim] = span / n as f64;
     }
     steps
+}
+
+/// Angle between the two chords meeting at `b`, in radians.
+fn turn_angle(a: P3, b: P3, c: P3) -> f64 {
+    let (u, v) = (sub(b, a), sub(c, b));
+    let (nu, nv) = (norm(u), norm(v));
+    if nu <= 0.0 || nv <= 0.0 {
+        return 0.0;
+    }
+    (dot(u, v) / (nu * nv)).clamp(-1.0, 1.0).acos()
 }
 
 /// Make a periodic coordinate continuous along a polyline.
