@@ -641,7 +641,9 @@ const MESH_BUDGET: &[(&str, usize)] = &[
     // Joining the missing seam (#39) took these down by three quarters:
     // holes 4175 -> 1025, winding 54 -> 0, non-manifold 25 -> 6. Across 400
     // vault parts, fully watertight went from 46 to 226.
-    ("holes", 1025),
+    // 1025 after the seam fix; aligning loops by smallest combined extent
+    // rather than by matching means took it to 918.
+    ("holes", 918),
     ("winding mismatches", 0),
     ("non-manifold", 6),
     ("parts that fail to mesh", 3),
