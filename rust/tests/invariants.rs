@@ -638,7 +638,14 @@ fn mesh_vertices_lie_on_their_source_surface() {
 /// per-part output -- that would fight every legitimate improvement, since
 /// fixing a trimming bug changes triangle counts everywhere.
 const MESH_BUDGET: &[(&str, usize)] = &[
-    ("holes", 4092),
+    // 4092 before angular deflection was added. Bounding the turn between
+    // facets resolves small features properly -- a 1 mm hole in a 180 mm
+    // casting was a hexagon before -- and the extra segments give the trimmer
+    // more edges to get wrong. Measured across the choice: 35 deg and 25 deg
+    // both land here, while 18 deg costs 4921 holes, 161 flips and 264
+    // non-manifold for no visible gain. 25 deg is the last setting that is
+    // free.
+    ("holes", 4175),
     ("winding mismatches", 54),
     ("non-manifold", 25),
     ("parts that fail to mesh", 3),

@@ -79,6 +79,40 @@ enum Cmd {
         /// Tessellation tolerance in model units.
         #[arg(long)]
         tol: Option<f64>,
+        /// Frames per sweep when the output is a .gif. The animation is two
+        /// sweeps: a turn about the vertical axis, then a tumble.
+        #[arg(long, default_value_t = 48)]
+        frames: usize,
+    },
+    /// Report and render everything in a PDM backup that changed since a date.
+    ///
+    /// Walks the tree for .SLDPRT at any depth, groups revisions of the same
+    /// part, and compares each part's newest revision against the last one
+    /// from before the cutoff. Dates come from inside the files
+    /// (`dcterms:modified`), so moving a backup around does not disturb them.
+    #[command(allow_negative_numbers = true)]
+    Since {
+        /// Root of the PDM backup.
+        dir: PathBuf,
+        /// ISO-8601 cutoff, e.g. 2026-06-01 or 2026-06-01T12:00:00Z.
+        #[arg(long)]
+        since: String,
+        /// Directory for the rendered comparisons. Omit to only report.
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+        /// Write animated turntables instead of stills.
+        #[arg(long)]
+        gif: bool,
+        #[arg(long, default_value_t = 420)]
+        size: u32,
+        #[arg(long, default_value_t = 36)]
+        frames: usize,
+        #[arg(long, default_value_t = -35.0)]
+        az: f64,
+        #[arg(long, default_value_t = 20.0)]
+        el: f64,
+        #[arg(long, default_value_t = 1e-5)]
+        tol_frac: f64,
     },
     /// Render parts as isometric PNGs (matte point-splat style).
     ///
@@ -177,7 +211,29 @@ fn main() -> ExitCode {
             size,
             tol_frac,
             tol,
-        } => cmd_diff(&old, &new, &out, az, el, size, tol_frac, tol),
+            frames,
+        } => cmd_diff(&old, &new, &out, az, el, size, tol_frac, tol, frames),
+        Cmd::Since {
+            dir,
+            since,
+            out,
+            gif,
+            size,
+            frames,
+            az,
+            el,
+            tol_frac,
+        } => cmd_since(
+            &dir,
+            &since,
+            out.as_deref(),
+            gif,
+            size,
+            frames,
+            az,
+            el,
+            tol_frac,
+        ),
         Cmd::Iso {
             files,
             out,
@@ -493,8 +549,9 @@ fn cmd_diff(
     size: u32,
     tol_frac: f64,
     tol: Option<f64>,
+    frames: usize,
 ) -> ExitCode {
-    match diff_inner(old, new, out, az, el, size, tol_frac, tol) {
+    match diff_inner(old, new, out, az, el, size, tol_frac, tol, frames) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("error: {e}");
@@ -513,8 +570,15 @@ fn diff_inner(
     size: u32,
     tol_frac: f64,
     tol: Option<f64>,
+    frames: usize,
 ) -> solid_diff::Result<()> {
-    let g_old = solid_diff::body_graphs(old)?.remove(0).graph;
+    // An empty path means there is no earlier revision: compare against an
+    // empty body so the whole part reads as added.
+    let g_old = if old.as_os_str().is_empty() {
+        solid_diff::Graph::new(Vec::new())
+    } else {
+        solid_diff::body_graphs(old)?.remove(0).graph
+    };
     let g_new = solid_diff::body_graphs(new)?.remove(0).graph;
 
     let d = solid_diff::diff::diff(&g_old, &g_new, tol_frac);
@@ -529,42 +593,81 @@ fn diff_inner(
     solid_diff::diff::paint(&mut m_new, &d.new);
 
     // Both sides share one framing so the two renders are comparable: a part
-    // that grew must look bigger, not get re-fitted to the same box.
+    // that grew must look bigger, not get re-fitted to the same box. The union
+    // box is also what keeps the turntable steady -- fitting per frame would
+    // make the part breathe as it turns.
     let (alo, ahi) = m_old.bounds();
     let (blo, bhi) = m_new.bounds();
     let frame = Some((
         [alo[0].min(blo[0]), alo[1].min(blo[1]), alo[2].min(blo[2])],
         [ahi[0].max(bhi[0]), ahi[1].max(bhi[1]), ahi[2].max(bhi[2])],
     ));
-    let opts = IsoOptions {
-        az,
-        el,
-        size,
-        face_colors: true,
-        frame,
-        ..IsoOptions::default()
-    };
-    let a = solid_diff::iso::render_iso(&m_old, &opts);
-    let b = solid_diff::iso::render_iso(&m_new, &opts);
 
+    let name = |p: &Path| {
+        p.file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "(no earlier revision)".to_string())
+    };
+    let labels = (name(old), name(new), d.summary());
+
+    let compose = |az: f64, el: f64| -> solid_diff::iso::Image {
+        let opts = IsoOptions {
+            az,
+            el,
+            size,
+            face_colors: true,
+            frame,
+            ..IsoOptions::default()
+        };
+        let a = solid_diff::iso::render_iso(&m_old, &opts);
+        let b = solid_diff::iso::render_iso(&m_new, &opts);
+        compose_pair(&a, &b, &labels)
+    };
+
+    let animate = out
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("gif"));
+    if animate {
+        let spin = solid_diff::anim::SpinOptions {
+            az_frames: frames,
+            el_frames: frames,
+            ..Default::default()
+        };
+        let angles = solid_diff::anim::spin_angles(az, el, &spin);
+        let n = angles.len();
+        let mut imgs = Vec::with_capacity(n);
+        for (i, (a, e)) in angles.into_iter().enumerate() {
+            if i % 8 == 0 {
+                eprint!("\r  rendering frame {}/{n}", i + 1);
+            }
+            imgs.push(compose(a, e));
+        }
+        eprintln!("\r  rendered {n} frames            ");
+        solid_diff::anim::write_gif(out, &imgs, spin.delay_cs)?;
+    } else {
+        compose(az, el).write_png(out)?;
+    }
+    println!("wrote {}", out.display());
+    Ok(())
+}
+
+/// Two renders side by side, titled, with the diff legend.
+fn compose_pair(
+    a: &solid_diff::iso::Image,
+    b: &solid_diff::iso::Image,
+    labels: &(String, String, String),
+) -> solid_diff::iso::Image {
     let pad = 12usize;
     let label_h = 34usize;
     let w = a.w + b.w + pad * 3;
     let h = a.h + label_h + pad * 2;
     let mut img = solid_diff::iso::Image::new(w, h, [26, 27, 38, 255]);
-    img.blit(&a, pad, label_h + pad);
-    img.blit(&b, a.w + pad * 2, label_h + pad);
+    img.blit(a, pad, label_h + pad);
+    img.blit(b, a.w + pad * 2, label_h + pad);
+    img.text(pad, pad, &labels.0, 2, [150, 160, 190, 255]);
+    img.text(a.w + pad * 2, pad, &labels.1, 2, [150, 160, 190, 255]);
+    img.text(pad, pad + 16, &labels.2, 2, [110, 118, 145, 255]);
 
-    let name = |p: &Path| {
-        p.file_name()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_default()
-    };
-    img.text(pad, pad, &name(old), 2, [150, 160, 190, 255]);
-    img.text(a.w + pad * 2, pad, &name(new), 2, [150, 160, 190, 255]);
-    img.text(pad, pad + 16, &d.summary(), 2, [110, 118, 145, 255]);
-
-    // Legend, in the same colours the faces carry.
     let mut x = a.w + pad * 2;
     for c in [
         solid_diff::diff::Change::Moved,
@@ -581,8 +684,106 @@ fn diff_inner(
         img.text(x, pad + 16, c.label(), 2, col);
         x += c.label().len() * 12 + 18;
     }
+    img
+}
 
-    img.write_png(out)?;
-    println!("wrote {}", out.display());
-    Ok(())
+/// Report, and optionally render, everything that changed since a date.
+#[allow(clippy::too_many_arguments)]
+fn cmd_since(
+    dir: &Path,
+    since: &str,
+    out: Option<&Path>,
+    gif: bool,
+    size: u32,
+    frames: usize,
+    az: f64,
+    el: f64,
+    tol_frac: f64,
+) -> ExitCode {
+    let revs = solid_diff::pdm::scan(dir);
+    if revs.is_empty() {
+        eprintln!("no .SLDPRT found under {}", dir.display());
+        return ExitCode::FAILURE;
+    }
+    let undated = revs.iter().filter(|r| r.modified.is_none()).count();
+    let changed = solid_diff::pdm::changes_since(&revs, since);
+    println!(
+        "{} revisions of {} parts under {}",
+        revs.len(),
+        revs.iter()
+            .map(|r| r.key.as_str())
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        dir.display()
+    );
+    if undated > 0 {
+        // Said out loud: a part with no date cannot be judged either way, and
+        // silently dropping it would read as "nothing changed".
+        println!("  {undated} revisions carry no date and were skipped");
+    }
+    println!("{} parts changed since {since}:", changed.len());
+    for c in &changed {
+        let when = c.after.modified.as_deref().unwrap_or("?");
+        let who = c.after.author.as_deref().unwrap_or("?");
+        let base = match &c.before {
+            Some(b) => format!("v{} -> v{}", b.version, c.after.version),
+            None => "new part".to_string(),
+        };
+        println!("  {:<44} {when}  {who:<10} {base}", c.key);
+    }
+
+    let Some(outdir) = out else {
+        return ExitCode::SUCCESS;
+    };
+    if let Err(e) = std::fs::create_dir_all(outdir) {
+        eprintln!("error: {e}");
+        return ExitCode::FAILURE;
+    }
+    let ext = if gif { "gif" } else { "png" };
+    let mut wrote = 0usize;
+    let mut failed = 0usize;
+    for c in &changed {
+        let safe: String = c
+            .key
+            .chars()
+            .map(|ch| {
+                if ch.is_alphanumeric() || ch == '-' {
+                    ch
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        let target = outdir.join(format!("{safe}.{ext}"));
+        // A part with no earlier revision is compared against nothing, which
+        // makes every face "added" -- the honest rendering of a new part.
+        let empty = std::path::PathBuf::new();
+        let old = c
+            .before
+            .as_ref()
+            .map(|b| b.path.as_path())
+            .unwrap_or(&empty);
+        match diff_inner(
+            old,
+            &c.after.path,
+            &target,
+            az,
+            el,
+            size,
+            tol_frac,
+            None,
+            frames,
+        ) {
+            Ok(()) => wrote += 1,
+            Err(e) => {
+                eprintln!("  {}: {e}", c.key);
+                failed += 1;
+            }
+        }
+    }
+    println!("wrote {wrote} comparisons to {}", outdir.display());
+    if failed > 0 {
+        println!("  {failed} could not be rendered");
+    }
+    ExitCode::SUCCESS
 }

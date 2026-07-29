@@ -7,6 +7,7 @@
 //!         --graph--> topology --geom+tess--> Mesh --render--> SVG
 //! ```
 
+pub mod anim;
 pub mod container;
 pub mod diff;
 pub mod font;
@@ -14,6 +15,7 @@ pub mod geom;
 pub mod graph;
 pub mod iso;
 pub mod mesh;
+pub mod pdm;
 pub mod render;
 pub mod sections;
 pub mod tess;
