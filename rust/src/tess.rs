@@ -1329,6 +1329,23 @@ fn tessellate_face(
             }
         }
     }
+    if std::env::var("SD_LOOPS").is_ok() {
+        for (i, lp) in loops_uv.iter().enumerate() {
+            let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+            for q in lp {
+                lo = lo.min(q[0]);
+                hi = hi.max(q[0]);
+            }
+            eprintln!(
+                "    face {} loop {i}: n={} u=[{lo:.4},{hi:.4}] span={:.4} first->last={:.4}",
+                face.id,
+                lp.len(),
+                hi - lo,
+                lp.last().map(|q| q[0]).unwrap_or(0.0) - lp[0][0]
+            );
+        }
+    }
+
     // Repair a missing seam before anything measures the domain: two rims
     // closed in 3D but open in 2D become one closed loop (#39).
     if !used_shim {
