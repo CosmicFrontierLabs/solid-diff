@@ -1277,24 +1277,55 @@ fn tessellate_face(
         })
         .collect();
     if !loops_uv.is_empty() {
-        let means0: P2 = {
-            let n = loops_uv[0].len() as f64;
-            let mut m = [0.0; 2];
-            for p in &loops_uv[0] {
-                m[0] += p[0] / n;
-                m[1] += p[1] / n;
-            }
-            m
-        };
-        for i in 1..loops_uv.len() {
-            for (dim, period) in [(0usize, surf.period_u()), (1usize, surf.period_v())] {
-                let Some(p) = period else { continue };
-                let n = loops_uv[i].len() as f64;
-                let mean: f64 = loops_uv[i].iter().map(|q| q[dim]).sum::<f64>() / n;
-                let shift = p * ((mean - means0[dim]) / p).round();
-                for q in loops_uv[i].iter_mut() {
-                    q[dim] -= shift;
+        // Bring every loop into the first one's period window.
+        //
+        // Pick the whole-period shift that keeps the *combined* extent
+        // smallest, rather than the one that lines the loops' means up.
+        // Matching means looks natural and has a pathological case: the outer
+        // boundary of a face often spans the whole period, so its mean sits
+        // mid-period, and a hole near the window's edge is then half a period
+        // away and rounding can throw it a full period out. On one bore that
+        // stretched the extent to 9.98 against a period of 6.28, which
+        // disabled the segment replication parity depends on and left 141 of
+        // 165 interior grid points classified outside -- the face came out as
+        // a few huge fans instead of a wall.
+        //
+        // The extent is exactly what the replication test looks at, so
+        // optimise it directly. Only three candidate shifts are ever worth
+        // trying: a loop more than one period out of place would have to have
+        // been unwrapped wrongly to begin with.
+        for dim in 0..2 {
+            let Some(p) = (if dim == 0 {
+                surf.period_u()
+            } else {
+                surf.period_v()
+            }) else {
+                continue;
+            };
+            let bounds = |lp: &Vec<P2>| {
+                lp.iter()
+                    .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), q| {
+                        (a.min(q[dim]), b.max(q[dim]))
+                    })
+            };
+            let (mut lo_all, mut hi_all) = bounds(&loops_uv[0]);
+            for i in 1..loops_uv.len() {
+                let (lo_i, hi_i) = bounds(&loops_uv[i]);
+                let guess = ((lo_i + hi_i) * 0.5 - (lo_all + hi_all) * 0.5) / p;
+                let mut best = (f64::INFINITY, 0.0f64);
+                for k in [guess.floor() - 1.0, guess.floor(), guess.floor() + 1.0] {
+                    let shift = p * k;
+                    let span = hi_all.max(hi_i - shift) - lo_all.min(lo_i - shift);
+                    if span < best.0 {
+                        best = (span, shift);
+                    }
                 }
+                for q in loops_uv[i].iter_mut() {
+                    q[dim] -= best.1;
+                }
+                let (lo_i, hi_i) = bounds(&loops_uv[i]);
+                lo_all = lo_all.min(lo_i);
+                hi_all = hi_all.max(hi_i);
             }
         }
     }
@@ -1426,6 +1457,7 @@ fn tessellate_face(
         }
     }
 
+    let (mut dbg_outside, mut dbg_near) = (0usize, 0usize);
     let nu = (((hi[0] - lo[0]) / su).floor() as isize).max(0) as usize;
     let nv = (((hi[1] - lo[1]) / sv).floor() as isize).max(0) as usize;
     let boundary_count = all_uv.len();
@@ -1433,11 +1465,13 @@ fn tessellate_face(
         for j in 0..=nv {
             let q = [lo[0] + su * i as f64, lo[1] + sv * j as f64];
             if !clf.inside(q) {
+                dbg_outside += 1;
                 continue;
             }
             // Drop grid points hugging the boundary: a point landing ON a
             // boundary segment between loop samples makes a T-junction.
             if boundary_count > 0 && clf.within(q, 0.45) {
+                dbg_near += 1;
                 continue;
             }
             all_uv.push(q);
@@ -1454,12 +1488,15 @@ fn tessellate_face(
     // parts in the corpus were tracked down.
     if trace_enabled() {
         eprintln!(
-            "trace face #{:<5} {:<12} boundary={:<6} grid={:<6} segs={:<6} {:>8.1}ms",
+            "trace face #{:<5} {:<12} boundary={:<6} grid={:<6} segs={:<6} cand={} outside={} near-bnd={} {:>8.1}ms",
             face.id,
             surf_node.map(|n| n.name.as_str()).unwrap_or("?"),
             boundary_count,
             all_uv.len() - boundary_count,
             clf.segs.len(),
+            (nu + 1) * (nv + 1),
+            dbg_outside,
+            dbg_near,
             t_start.elapsed().as_secs_f64() * 1e3,
         );
     }
