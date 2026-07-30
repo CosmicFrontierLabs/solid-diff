@@ -527,6 +527,9 @@ pub fn export_faces(graph: &Graph, tol: Option<f64>, only: Option<&[NodeId]>) ->
             anchor: Option<(u32, P3)>,
             /// (period dimension, direction) when the loop winds a period.
             winding: Option<(usize, f64)>,
+            /// Unwrapped UV bounding box of the loop's samples.
+            uv_lo: [f64; 2],
+            uv_hi: [f64; 2],
         }
         let surf_eval = crate::geom::surfaces::make_surface(graph, snode);
         let mut recs: Vec<LoopRec> = Vec::new();
@@ -624,22 +627,34 @@ pub fn export_faces(graph: &Graph, tol: Option<f64>, only: Option<&[NodeId]>) ->
             // net travel: a rim accumulates a full period, a hole nets out to
             // zero. Geometry decides; the file's orientation flags do not.
             let mut winding = None;
+            let mut uv_lo = [f64::INFINITY; 2];
+            let mut uv_hi = [f64::NEG_INFINITY; 2];
             if let Some(surf) = surf_eval.as_ref() {
+                // One continuous unwrapped trace serves the winding test and
+                // the bbox both.
+                let mut prev: Option<[f64; 2]> = None;
+                let mut acc = [0.0f64; 2];
+                for q3 in &chain {
+                    let mut c = surf.inv(*q3);
+                    for (dim, period) in [(0usize, surf.period_u()), (1usize, surf.period_v())] {
+                        let Some(p) = period else { continue };
+                        if let Some(pr) = prev {
+                            let mut d = c[dim] - pr[dim];
+                            d -= p * (d / p).round();
+                            acc[dim] += d;
+                            c[dim] = pr[dim] + d;
+                        }
+                    }
+                    for dim in 0..2 {
+                        uv_lo[dim] = uv_lo[dim].min(c[dim]);
+                        uv_hi[dim] = uv_hi[dim].max(c[dim]);
+                    }
+                    prev = Some(c);
+                }
                 for (dim, period) in [(0usize, surf.period_u()), (1usize, surf.period_v())] {
                     let Some(p) = period else { continue };
-                    let mut prev: Option<f64> = None;
-                    let mut acc = 0.0;
-                    for q3 in &chain {
-                        let c = surf.inv(*q3)[dim];
-                        if let Some(pr) = prev {
-                            let mut d = c - pr;
-                            d -= p * (d / p).round();
-                            acc += d;
-                        }
-                        prev = Some(c);
-                    }
-                    if acc.abs() > p * 0.75 {
-                        winding = Some((dim, acc.signum()));
+                    if acc[dim].abs() > p * 0.75 {
+                        winding = Some((dim, acc[dim].signum()));
                         break;
                     }
                 }
@@ -648,6 +663,8 @@ pub fn export_faces(graph: &Graph, tol: Option<f64>, only: Option<&[NodeId]>) ->
                 run,
                 anchor,
                 winding,
+                uv_lo,
+                uv_hi,
             });
         }
 
@@ -696,11 +713,36 @@ pub fn export_faces(graph: &Graph, tol: Option<f64>, only: Option<&[NodeId]>) ->
             let Some(surf) = surf_eval.as_ref() else {
                 continue;
             };
+            // The seam must not cross any other loop, or its wire intersects
+            // that loop's wire and the face mistrims. Check the straight UV
+            // path between the anchors against every other loop's box; when
+            // something is in the way, leave the face to the gate rather
+            // than guess.
+            let period = if dim == 0 {
+                surf.period_u()
+            } else {
+                surf.period_v()
+            }
+            .unwrap_or(f64::INFINITY);
             let ua = surf.inv(pa);
             let mut ub = surf.inv(pb);
-            for (d, period) in [(0usize, surf.period_u()), (1usize, surf.period_v())] {
-                let Some(p) = period else { continue };
+            for (d, per) in [(0usize, surf.period_u()), (1usize, surf.period_v())] {
+                let Some(p) = per else { continue };
                 ub[d] -= p * ((ub[d] - ua[d]) / p).round();
+            }
+            let margin = period * 0.02;
+            let crosses = recs.iter().enumerate().any(|(k, r)| {
+                if k == i || k == j || r.run.is_empty() || !r.uv_lo[dim].is_finite() {
+                    return false;
+                }
+                // Compare in the same period window as the anchor.
+                let shift =
+                    period * (((r.uv_lo[dim] + r.uv_hi[dim]) * 0.5 - ua[dim]) / period).round();
+                let (lo, hi) = (r.uv_lo[dim] - shift, r.uv_hi[dim] - shift);
+                ua[dim] >= lo - margin && ua[dim] <= hi + margin
+            });
+            if crosses {
+                continue;
             }
             const SEAM_STEPS: usize = 16;
             let mut seam_pts: Vec<P3> = Vec::with_capacity(SEAM_STEPS + 1);
