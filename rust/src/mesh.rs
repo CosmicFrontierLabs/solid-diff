@@ -131,9 +131,9 @@ impl Mesh {
 
         // Apply the consistency flips first, so each component is a coherent
         // 2-manifold whose signed volume means something.
-        for ti in 0..n {
-            if flip[ti] {
-                self.triangles[ti].swap(1, 2);
+        for (t, f) in self.triangles.iter_mut().zip(&flip) {
+            if *f {
+                t.swap(1, 2);
             }
         }
 
@@ -201,17 +201,16 @@ impl Mesh {
             .fold(0.0f64, f64::max)
             .powi(3)
             .max(1e-300);
-        for ti in 0..n {
-            let ci = component[ti];
-            if open_edges[ci] * 10 >= tris_per[ci].max(1) {
+        for (t, ci) in self.triangles.iter_mut().zip(&component) {
+            if open_edges[*ci] * 10 >= tris_per[*ci].max(1) {
                 continue; // open sheet: volume is meaningless
             }
-            if vol[ci].abs() < scale3 * 1e-9 {
+            if vol[*ci].abs() < scale3 * 1e-9 {
                 continue; // degenerate enclosure
             }
-            let want_positive = depth[ci] == 0;
-            if (vol[ci] > 0.0) != want_positive {
-                self.triangles[ti].swap(1, 2);
+            let want_positive = depth[*ci] == 0;
+            if (vol[*ci] > 0.0) != want_positive {
+                t.swap(1, 2);
             }
         }
     }
