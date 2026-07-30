@@ -587,8 +587,8 @@ fn diff_inner(
         println!("(no geometric differences found)");
     }
 
-    let mut m_old = solid_diff::tess::tessellate(&g_old, tol);
-    let mut m_new = solid_diff::tess::tessellate(&g_new, tol);
+    let mut m_old = solid_diff::tessellate(&g_old, tol);
+    let mut m_new = solid_diff::tessellate(&g_new, tol);
     solid_diff::diff::paint(&mut m_old, &d.old);
     solid_diff::diff::paint(&mut m_new, &d.new);
 

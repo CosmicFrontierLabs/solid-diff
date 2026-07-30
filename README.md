@@ -27,10 +27,19 @@ revisions of each part and compares the newest against the last one from
 before the cutoff, reading dates out of each file's `dcterms:modified` so that
 copying the backup around does not disturb them.
 
-Everything lives in the Rust crate under `rust/`. The tests assert invariants
-the part files state about themselves rather than any recorded reference
-output — see `rust/tests/invariants.rs`. For coverage numbers and every known
-gap, see
+Everything lives in the Rust crate under `rust/`. Tessellation runs through
+OpenCASCADE: the Parasolid B-rep is exported to STEP (`rust/src/step.rs`,
+exact surfaces + sampled boundary polylines) and meshed by OCCT
+(`rust/src/occt.rs`), whose shape healing closes trimmed periodic faces
+properly. Every part is gated: if the OCCT mesh comes back with more open
+edges than the native tessellator produces, the native mesh is used instead,
+so the pipeline is never worse than what it replaced. Measured across 150
+vault parts: holes 4,360 -> 2,791, fully watertight parts 101 -> 117, flipped
+edges 2,565 -> 2,539, non-manifold 286 -> 153.
+
+The tests assert invariants the part files state about themselves rather than
+any recorded reference output — see `rust/tests/invariants.rs`. For coverage
+numbers and every known gap, see
 [`docs/STATUS.md`](docs/STATUS.md) for coverage numbers and every known gap.
 
 ```sh

@@ -1,5 +1,12 @@
 name: rust
 
+# occt-sys builds OpenCASCADE from source. CMake 4 dropped compatibility with
+# the minimum version OCCT declares; this env var is CMake's official escape
+# hatch. First uncached CI build is slow (~40 min on a 4-core runner); the
+# Swatinem cache carries the objects afterwards.
+env:
+  CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+
 on:
   push:
     branches: [main]
