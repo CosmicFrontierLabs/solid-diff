@@ -9,49 +9,36 @@ solid-diff mesh part.SLDPRT -o part.obj --stl part.stl [--tol 1e-4] --stats
 
 ## How it works
 
-Per FACE node (`rust/src/tess.rs`):
+The B-rep is exported to STEP (`rust/src/step.rs`) and meshed by OpenCASCADE
+(`rust/src/occt.rs`). A native per-face tessellator used to live in
+`tess.rs`; it was removed when the project went all-in on the OCCT path.
 
-1. **Boundary loops** — walk `FACE.loop → LOOP.halfedge` (via the `backward`
-   link, which empirically visits halfedges in chaining order), sampling each
-   edge's 3D curve adaptively. Edges are sampled ONCE, shared by both
-   adjacent faces via a two-pass `EdgeSampler` (pass 1 negotiates the finest
-   spacing any face wants), so neighbors get bit-identical boundary points
-   and vertex welding closes the mesh. Curve evaluators (`rust/src/geom/`): LINE,
-   CIRCLE, ELLIPSE, B_CURVE (NURBS via de Boor), TRIMMED_CURVE, and
-   INTERSECTION (via its CHART's precomputed sample points).
-2. **UV mapping** — invert the face's surface: PLANE, CYLINDER, CONE, SPHERE,
-   TORUS, SWEPT_SURF, SPUN_SURF, OFFSET_SURF (fixed-point inversion),
-   B_SURFACE (tensor de Boor + Gauss-Newton inversion), and BLENDED_EDGE
-   (rolling-ball fillets: spine param × slerped arc between tangency
-   directions recovered by projecting onto the support walls).
-   Parameterizations only need to be eval/inv self-consistent, so Parasolid's
-   exact conventions don't matter.
-3. **Universal trimming** — no seam-cut special cases: boundary loops are
-   unwrapped, aligned to a common period window, and points are classified by
-   **crossing parity** against all loop segments replicated across parameter
-   periods. Whenever a parameter direction is open, the parity anchor sits
-   provably outside the loops' extent (majority-voted across 3 anchor rays to
-   dodge ray-through-vertex errors), making the test exact and independent of
-   loop orientation. This one code path handles plain polygons, holes, any
-   winding configuration, hemispheres-to-the-pole (via natural parameter
-   bounds), and fully closed surfaces. Doubly-periodic faces (torus) use a
-   material-left heuristic with an empty-result flip as backstop.
-4. **Triangulation** — interior grid at a curvature-probed step (midpoint
-   chord error vs tolerance), grid points within half a step of a boundary
-   segment dropped (T-junction prevention), metric-scaled **constrained**
-   Delaunay (`spade`) with every boundary segment forced in as a constraint,
-   then trimmed by flood fill: start from one triangle and flip in/out at
-   each constraint crossing.
-5. **Back to 3D** — edge samples keep their exact shared 3D coordinates;
-   added points are surface-evaluated. Triangles are wound outward: the XT
-   outward normal is the parametric normal × surface-node sense × face sense
-   — validated by signed-volume checks against analytic volumes.
-6. **Fallback** — faces on any remaining unsupported surface are triangulated
-   on a best-fit plane of their boundary: coarse but always present.
+1. **STEP export** — surfaces are written exactly wherever STEP has the type
+   (plane, cylinder, cone, sphere, torus, B-spline); everything else is
+   sampled. Edges are **sampled polylines** from the shared two-pass
+   `EdgeSampler` (`rust/src/sample.rs`): each edge is sampled once, in 3D, at
+   the finest spacing either adjacent face wants, so both faces reference one
+   curve entity and the shell sews. This sidesteps the two-arcs ambiguity on
+   periodic curves, null-curve edges (reconstructed as surface×surface
+   intersections when both supports are exact), `INTERSECTION` and
+   `SP_CURVE`. Faces on closed surfaces get their seam emitted explicitly —
+   OCCT's reader-side `FixMissingSeam` does not repair a dropped seam.
+2. **OCCT import + meshing** — the STEP reader runs shape healing on the way
+   in (pcurve computation, seam insertion, wire orientation), then
+   `BRepMesh_IncrementalMesh` triangulates at a deflection of 0.05% of part
+   size. Nodes along shared edges are bit-identical on both sides, so exact
+   welding closes the shell without tolerance guesswork.
+3. **Face identity** — STEP transfer can reorder and split faces, so each
+   OCCT face is matched back to the Parasolid FACE whose surface it lies on
+   (geometric probe, `FaceMatcher`). That keeps `diff` colouring working.
+   The curve/surface evaluators in `rust/src/geom/` (LINE, CIRCLE, ELLIPSE,
+   B_CURVE, PLANE … BLENDED_EDGE) drive the exporter, the matcher, and the
+   redundancy invariants in the tests.
 
-`tessellate()` welds everything into one `Mesh` (vertices, triangles,
-per-triangle source FACE id, face colors from `SDL/TYSA_COLOUR`). Writers:
-OBJ (grouped per face) and binary STL.
+`tessellate()` returns one welded `Mesh` (vertices, triangles, per-triangle
+source FACE id, face colors from `SDL/TYSA_COLOUR`); a body the round trip
+cannot carry comes back empty and is counted as a failed part. Writers: OBJ
+(grouped per face) and binary STL.
 
 ## Validation (2026-07-25, 33-part corpus: 14 public samples + 19 vault parts)
 

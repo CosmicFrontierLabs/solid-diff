@@ -5,6 +5,11 @@ format itself and `docs/STATUS.md` for current coverage and open work.
 
 ## Scope
 
+The full 1536-part PDM vault export lives at
+`~/vault_latest/pdm-sldprt-latest/` (not committed; it used to sit in `/tmp`
+and got lost on reboot). Corpus sweeps, contact sheets and the review server
+all read from it.
+
 **Pre-2015 SolidWorks files are out of scope.** Those use the older OLE2/CFB
 container (magic `D0 CF 11 E0 A1 B1 1A E1`) rather than the 2015+ chunked
 format everything here is built around. They are 16 of 1536 files in the vault
@@ -19,16 +24,20 @@ Everything is the Rust crate in `rust/`. An earlier prototype proved the
 format and was deleted once the port passed it; nothing of it remains, and
 nothing here is written to agree with it.
 
-`tools/` holds shell and standalone Python utilities (contact-sheet batching,
-the render gallery server); none of it is part of the library.
+`tools/` holds utilities that are not part of the library: shell and Python
+(contact-sheet batching, the render gallery server) plus `frame-review/`, a
+standalone axum crate for ✓/✗ frame-by-frame render review — every ✗ appends
+a triage task to `renders/review-verdicts/triage_queue.jsonl` for the agent.
 
 ## Tessellation architecture
 
-Two paths. The default exports the B-rep to STEP and lets OpenCASCADE mesh it
-(`step.rs` + `occt.rs`, cargo feature `occt`, on by default); `SD_NO_OCCT=1`
-forces the native tessellator (`tess.rs`). Each part is gated at runtime:
-whichever mesh has fewer open edges wins, so a transfer failure degrades to
-the native result instead of shipping confetti.
+One path: the B-rep is exported to STEP and meshed by OpenCASCADE
+(`step.rs` + `occt.rs`, unconditional). The native tessellator and its
+per-part quality gate were removed deliberately — do not reintroduce them. A
+body the round trip cannot carry comes back as an **empty mesh** and shows up
+in the "parts that fail to mesh" budget, not as a silent fallback. Edge
+sampling lives on in `sample.rs` (`EdgeSampler`), which the STEP exporter and
+the OCCT face matcher share.
 
 The STEP exporter's two load-bearing choices: surfaces are exact wherever
 STEP has the type, and **edges are sampled polylines** from the shared
@@ -39,17 +48,20 @@ surfaces get their seam emitted explicitly (the seam edge appears twice in
 the wire), because OCCT's reader-side `FixMissingSeam` measurably does not
 repair what it drops.
 
-The corpus budgets in `tests/invariants.rs` ratchet the NATIVE path only;
-the OCCT path is measured against it per part by the gate.
+The corpus budgets in `tests/invariants.rs` ratchet the OCCT path — the
+shipped path — directly.
 
 ## Testing
 
 ```sh
 cd rust
-cargo test --release          # 76 tests
+cargo test --release          # 99 tests
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 ```
+
+With CMake ≥ 4 installed, export `CMAKE_POLICY_VERSION_MINIMUM=3.5` or the
+occt-sys build of OpenCASCADE fails at configure time (CI already sets it).
 
 CI runs all three. Corpus tests skip themselves when `samples/*.SLDPRT` are
 absent (they are fetched by `samples/fetch.sh`, not committed); vault parts in

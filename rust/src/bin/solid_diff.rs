@@ -8,7 +8,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 
 use solid_diff::iso::{contact_sheet, render_iso, IsoOptions, Tile};
 use solid_diff::render::{render_mesh_svg, svg_document, Order, RenderOptions};
-use solid_diff::{body_graphs, container, mesh_file, sections, tess, xt, Graph};
+use solid_diff::{body_graphs, container, mesh_file, sections, xt, Graph};
 
 #[derive(Parser)]
 #[command(
@@ -530,11 +530,10 @@ fn cmd_render(
     ExitCode::SUCCESS
 }
 
-/// Keep `tess` and `body_graphs` referenced for the binary's link graph even
-/// when only some subcommands are used.
+/// Keep `body_graphs` referenced for the binary's link graph even when only
+/// some subcommands are used.
 #[allow(dead_code)]
-fn _unused(g: &Graph) {
-    let _ = tess::tessellate(g, None);
+fn _unused() {
     let _ = body_graphs(Path::new("/dev/null"));
 }
 

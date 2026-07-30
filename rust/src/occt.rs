@@ -24,9 +24,17 @@ use crate::value::NodeId;
 /// (0.5 rad) rides along with it.
 const DEFLECTION_FRAC: f64 = 5e-4;
 
-/// Tessellate via OCCT. Returns `None` when the round trip produces nothing,
-/// so the caller can fall back to the native tessellator.
+/// OCCT's STEP reader keeps global state (`Interface_Static`, the message
+/// system), and concurrent readers abort with "terminate called recursively".
+/// One process, one transfer at a time. The CLI parallelizes across
+/// *processes*, so this costs nothing there; it exists for multithreaded
+/// callers like the test harness.
+static OCCT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Tessellate via OCCT. Returns `None` when the round trip produces nothing
+/// renderable for this body.
 pub fn tessellate(graph: &Graph, tol: Option<f64>) -> Option<Mesh> {
+    let _serial = OCCT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let scale = graph.model_scale();
     let export = crate::step::export(graph, tol);
     if export.faces.is_empty() {
@@ -196,7 +204,7 @@ impl FaceMatcher {
     fn new(graph: &Graph) -> Self {
         let scale = graph.model_scale();
         let slack = scale * 0.02;
-        let mut sampler = crate::tess::EdgeSampler::new(scale * 2e-3);
+        let mut sampler = crate::sample::EdgeSampler::new(scale * 2e-3);
         let mut faces = Vec::new();
         let mut fallback = 0;
         for face in graph.by_type("FACE") {

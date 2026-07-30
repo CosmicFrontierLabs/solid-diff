@@ -84,7 +84,7 @@ fn main() {
                 .join(" ")
         );
 
-        let mesh = solid_diff::tess::tessellate(g, None);
+        let mesh = solid_diff::tessellate(g, None);
         println!(
             "  mesh: {} tris, {} verts",
             mesh.triangles.len(),

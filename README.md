@@ -31,10 +31,7 @@ Everything lives in the Rust crate under `rust/`. Tessellation runs through
 OpenCASCADE: the Parasolid B-rep is exported to STEP (`rust/src/step.rs`,
 exact surfaces + sampled boundary polylines) and meshed by OCCT
 (`rust/src/occt.rs`), whose shape healing closes trimmed periodic faces
-properly. Every part is gated: if the OCCT mesh comes back with more open
-edges than the native tessellator produces, the native mesh is used instead,
-so the pipeline is never worse than what it replaced. Measured across 150
-vault parts, visible gaps (open edges) fell from 4,360 to 2,791.
+properly.
 
 The tests assert invariants the part files state about themselves rather than
 any recorded reference output — see `rust/tests/invariants.rs`. For coverage

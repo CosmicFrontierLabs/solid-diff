@@ -12,8 +12,8 @@
 //! * **Surfaces are exact** wherever STEP has the type: plane, cylinder, cone,
 //!   sphere, torus, NURBS, extrusion, revolution, offset. Only `BLENDED_EDGE`
 //!   (our reconstruction, not the file's) is sampled.
-//! * **Edges are sampled polylines**, not analytic curves, taken from the same
-//!   shared `EdgeSampler` the native tessellator uses. That sidesteps in one
+//! * **Edges are sampled polylines**, not analytic curves, taken from the
+//!   shared `EdgeSampler` (`sample.rs`). That sidesteps in one
 //!   move every edge pathology this project has hit: the two-arcs ambiguity on
 //!   periodic curves (XT stores no direction flag), `INTERSECTION` curves with
 //!   no closed form, `SP_CURVE`, and edges with a null curve pointer. Both
@@ -27,7 +27,7 @@ use std::path::Path;
 
 use crate::geom::{curves::make_curve, P3};
 use crate::graph::Graph;
-use crate::tess::EdgeSampler;
+use crate::sample::EdgeSampler;
 use crate::value::{Node, NodeId};
 
 /// A finished export: the STEP text plus the FACE node ids actually written,

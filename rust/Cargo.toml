@@ -11,8 +11,8 @@ spade = "2"
 clap = { version = "4", features = ["derive"] }
 png = "0.18.1"
 gif = "0.14.2"
-opencascade-sys = { version = "0.2.0", optional = true }
-cxx = { version = "1.0.198", optional = true }
+opencascade-sys = "0.2.0"
+cxx = "1.0.198"
 
 [profile.release]
 opt-level = 3
@@ -24,7 +24,3 @@ path = "src/lib.rs"
 [[bin]]
 name = "solid-diff"
 path = "src/bin/solid_diff.rs"
-
-[features]
-default = ["occt"]
-occt = ["dep:opencascade-sys", "dep:cxx"]
