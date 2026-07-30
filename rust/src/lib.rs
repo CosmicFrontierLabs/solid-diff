@@ -117,6 +117,12 @@ pub fn tessellate(graph: &Graph, tol: Option<f64>) -> Mesh {
     {
         if std::env::var_os("SD_NO_OCCT").is_none() {
             if let Some(m) = occt::tessellate(graph, tol) {
+                // Measurement bypass: how does the OCCT mesh look before the
+                // gate? Refinements to the exporter are invisible in gated
+                // corpus numbers whenever the gate rejects both versions.
+                if std::env::var_os("SD_FORCE_OCCT").is_some() {
+                    return m;
+                }
                 // Per-part quality gate. Measured across 150 vault parts, the
                 // OCCT path produces more fully-watertight parts (110 vs 101)
                 // and far fewer flipped edges (12 vs 2,565), but when a face's
