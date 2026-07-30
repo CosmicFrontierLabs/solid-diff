@@ -141,6 +141,11 @@ impl Image {
 
     /// Draw `text` with the built-in 5x7 font, magnified by `scale`.
     pub fn text(&mut self, x: usize, y: usize, text: &str, scale: usize, c: [u8; 4]) {
+        // Fold to what the 5x7 font can draw: accented Latin becomes its base
+        // letter rather than '?', so "Défaut" stops printing as "D?faut".
+        // text_width applies the same fold, or metrics would drift from what
+        // is drawn whenever a ligature expands.
+        let text = crate::font::fold(text);
         let scale = scale.max(1);
         for (i, ch) in text.chars().enumerate() {
             let g = glyph(ch);

@@ -114,9 +114,88 @@ pub fn glyph(c: char) -> &'static [u8; 5] {
 
 /// Width in pixels of `text` drawn at integer `scale`.
 pub fn text_width(text: &str, scale: usize) -> usize {
-    if text.is_empty() {
+    // Same fold as drawing, or a ligature expansion would make the measured
+    // width narrower than the ink.
+    let n = fold(text).chars().count();
+    if n == 0 {
         0
     } else {
-        (text.chars().count() * ADVANCE - 1) * scale
+        (n * ADVANCE - 1) * scale
+    }
+}
+
+/// Fold text to the ASCII this font can draw.
+///
+/// The glyph table covers 0x20..0x7E; anything else used to render as `?`,
+/// which turned `00245215-A_Défaut` into `00245215-A_D?faut` on every contact
+/// sheet. Accented Latin letters fold to their base letter, the handful of
+/// ligatures expand, and only genuinely unrepresentable characters keep the
+/// `?`.
+pub fn fold(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if (c as u32) < 0x7F {
+            out.push(c);
+            continue;
+        }
+        match c {
+            'À'..='Å' | 'Ā' | 'Ă' | 'Ą' => out.push('A'),
+            'à'..='å' | 'ā' | 'ă' | 'ą' => out.push('a'),
+            'Æ' => out.push_str("AE"),
+            'æ' => out.push_str("ae"),
+            'Ç' | 'Ć' | 'Ĉ' | 'Ċ' | 'Č' => out.push('C'),
+            'ç' | 'ć' | 'ĉ' | 'ċ' | 'č' => out.push('c'),
+            'Ð' | 'Ď' | 'Đ' => out.push('D'),
+            'ð' | 'ď' | 'đ' => out.push('d'),
+            'È'..='Ë' | 'Ē' | 'Ĕ' | 'Ė' | 'Ę' | 'Ě' => out.push('E'),
+            'è'..='ë' | 'ē' | 'ĕ' | 'ė' | 'ę' | 'ě' => out.push('e'),
+            'Ĝ' | 'Ğ' | 'Ġ' | 'Ģ' => out.push('G'),
+            'ĝ' | 'ğ' | 'ġ' | 'ģ' => out.push('g'),
+            'Ì'..='Ï' | 'Ĩ' | 'Ī' | 'Ĭ' | 'Į' | 'İ' => out.push('I'),
+            'ì'..='ï' | 'ĩ' | 'ī' | 'ĭ' | 'į' | 'ı' => out.push('i'),
+            'Ñ' | 'Ń' | 'Ņ' | 'Ň' => out.push('N'),
+            'ñ' | 'ń' | 'ņ' | 'ň' => out.push('n'),
+            'Ò'..='Ö' | 'Ø' | 'Ō' | 'Ŏ' | 'Ő' => out.push('O'),
+            'ò'..='ö' | 'ø' | 'ō' | 'ŏ' | 'ő' => out.push('o'),
+            'Œ' => out.push_str("OE"),
+            'œ' => out.push_str("oe"),
+            'Ś' | 'Ŝ' | 'Ş' | 'Š' => out.push('S'),
+            'ś' | 'ŝ' | 'ş' | 'š' => out.push('s'),
+            'ß' => out.push_str("ss"),
+            'Ţ' | 'Ť' => out.push('T'),
+            'ţ' | 'ť' => out.push('t'),
+            'Ù'..='Ü' | 'Ũ' | 'Ū' | 'Ŭ' | 'Ů' | 'Ű' | 'Ų' => out.push('U'),
+            'ù'..='ü' | 'ũ' | 'ū' | 'ŭ' | 'ů' | 'ű' | 'ų' => out.push('u'),
+            'Ý' | 'Ÿ' => out.push('Y'),
+            'ý' | 'ÿ' => out.push('y'),
+            'Ź' | 'Ż' | 'Ž' => out.push('Z'),
+            'ź' | 'ż' | 'ž' => out.push('z'),
+            'Ł' => out.push('L'),
+            'ł' => out.push('l'),
+            // Punctuation lookalikes that show up in filenames.
+            '\u{2018}' | '\u{2019}' => out.push('\''),
+            '\u{201C}' | '\u{201D}' => out.push('"'),
+            '\u{2013}' | '\u{2014}' => out.push('-'),
+            '\u{00A0}' => out.push(' '),
+            _ => out.push('?'),
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod fold_tests {
+    use super::*;
+
+    #[test]
+    fn the_part_name_that_started_this() {
+        assert_eq!(fold("00245215-A_Défaut"), "00245215-A_Defaut");
+    }
+
+    #[test]
+    fn ascii_is_untouched_and_ligatures_expand() {
+        assert_eq!(fold("plain-Name_123"), "plain-Name_123");
+        assert_eq!(fold("Straße œuvre"), "Strasse oeuvre");
+        assert_eq!(fold("日本"), "??"); // genuinely unrepresentable stays visible
     }
 }
