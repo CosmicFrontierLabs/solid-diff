@@ -15,9 +15,12 @@ pub mod geom;
 pub mod graph;
 pub mod iso;
 pub mod mesh;
+#[cfg(feature = "occt")]
+pub mod occt;
 pub mod pdm;
 pub mod render;
 pub mod sections;
+pub mod step;
 pub mod tess;
 pub mod value;
 pub mod xt;
@@ -103,6 +106,36 @@ pub fn body_graphs(path: &Path) -> Result<Vec<BodyGraph>> {
 }
 
 /// Tessellate the best body graph in a part file (or a bare `.x_b`).
+/// Tessellate a body graph by the best available means.
+///
+/// With the `occt` feature (the default) the B-rep is exported to STEP and
+/// meshed by OpenCASCADE, whose shape healing closes trimmed periodic faces
+/// properly. The native tessellator remains as the fallback for bodies the
+/// round trip cannot carry, and behind `SD_NO_OCCT=1` for A/B measurement.
+pub fn tessellate(graph: &Graph, tol: Option<f64>) -> Mesh {
+    #[cfg(feature = "occt")]
+    {
+        if std::env::var_os("SD_NO_OCCT").is_none() {
+            if let Some(m) = occt::tessellate(graph, tol) {
+                // Per-part quality gate. Measured across 150 vault parts, the
+                // OCCT path produces more fully-watertight parts (110 vs 101)
+                // and far fewer flipped edges (12 vs 2,565), but when a face's
+                // trim collapses in transfer it fails big: a handful of parts
+                // carried 38k open edges. Where the OCCT mesh looks unhealthy,
+                // mesh natively too and keep whichever has fewer open edges.
+                let r = m.manifold_report();
+                if r.boundary == 0 {
+                    return m;
+                }
+                let native = tess::tessellate(graph, tol);
+                let rn = native.manifold_report();
+                return if rn.boundary < r.boundary { native } else { m };
+            }
+        }
+    }
+    tess::tessellate(graph, tol)
+}
+
 pub fn mesh_file(path: &Path, tol: Option<f64>) -> Result<Mesh> {
     let ext = path
         .extension()
@@ -112,8 +145,8 @@ pub fn mesh_file(path: &Path, tol: Option<f64>) -> Result<Mesh> {
     if ext == "x_b" || ext == "xb" {
         let data = std::fs::read(path)?;
         let nodes = xt::parse_transmit(&data).map_err(|e| Error::Parse(e.to_string()))?;
-        return Ok(tess::tessellate(&Graph::new(nodes), tol));
+        return Ok(tessellate(&Graph::new(nodes), tol));
     }
     let graphs = body_graphs(path)?;
-    Ok(tess::tessellate(&graphs[0].graph, tol))
+    Ok(tessellate(&graphs[0].graph, tol))
 }

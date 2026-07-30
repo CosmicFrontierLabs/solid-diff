@@ -22,6 +22,26 @@ nothing here is written to agree with it.
 `tools/` holds shell and standalone Python utilities (contact-sheet batching,
 the render gallery server); none of it is part of the library.
 
+## Tessellation architecture
+
+Two paths. The default exports the B-rep to STEP and lets OpenCASCADE mesh it
+(`step.rs` + `occt.rs`, cargo feature `occt`, on by default); `SD_NO_OCCT=1`
+forces the native tessellator (`tess.rs`). Each part is gated at runtime:
+whichever mesh has fewer open edges wins, so a transfer failure degrades to
+the native result instead of shipping confetti.
+
+The STEP exporter's two load-bearing choices: surfaces are exact wherever
+STEP has the type, and **edges are sampled polylines** from the shared
+`EdgeSampler` — that one choice sidesteps the two-arcs ambiguity, null-curve
+edges, `INTERSECTION` and `SP_CURVE` in a single move, and makes both faces
+of an edge reference one curve entity so the shell sews. Faces on closed
+surfaces get their seam emitted explicitly (the seam edge appears twice in
+the wire), because OCCT's reader-side `FixMissingSeam` measurably does not
+repair what it drops.
+
+The corpus budgets in `tests/invariants.rs` ratchet the NATIVE path only;
+the OCCT path is measured against it per part by the gate.
+
 ## Testing
 
 ```sh

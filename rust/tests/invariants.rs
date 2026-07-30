@@ -549,10 +549,20 @@ fn meshing_is_deterministic() {
         return;
     }
     for p in &parts {
-        let Ok(a) = solid_diff::mesh_file(p, None) else {
+        // Native path explicitly: determinism of the OCCT path is OCCT's
+        // business, and mixing paths mid-test would race the env gate.
+        let Ok(mut bodies) = solid_diff::body_graphs(p) else {
             continue;
         };
-        let b = solid_diff::mesh_file(p, None).expect("second mesh of the same file failed");
+        if bodies.is_empty() {
+            continue;
+        }
+        let g = bodies.remove(0).graph;
+        let a = solid_diff::tess::tessellate(&g, None);
+        if a.is_empty() {
+            continue;
+        }
+        let b = solid_diff::tess::tessellate(&g, None);
         assert_eq!(a.vertices.len(), b.vertices.len(), "{p:?}: vertex count");
         assert_eq!(
             a.triangles.len(),
@@ -671,7 +681,19 @@ fn corpus_mesh_quality_does_not_regress() {
     let (mut holes, mut flips, mut nonmani, mut failed, mut tris) = (0, 0, 0, 0, 0);
 
     for p in &parts {
-        match solid_diff::mesh_file(p, None) {
+        // The budgets ratchet the NATIVE tessellator. The OCCT path is gated
+        // per part against this one at runtime and measured in its own A/B.
+        let native = solid_diff::body_graphs(p)
+            .ok()
+            .and_then(|mut b| {
+                if b.is_empty() {
+                    None
+                } else {
+                    Some(b.remove(0).graph)
+                }
+            })
+            .map(|g| solid_diff::tess::tessellate(&g, None));
+        match native.ok_or(()) {
             Ok(m) if !m.is_empty() => {
                 let r = m.manifold_report();
                 holes += r.boundary;
