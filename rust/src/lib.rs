@@ -123,21 +123,22 @@ pub fn tessellate(graph: &Graph, tol: Option<f64>) -> Mesh {
                 if std::env::var_os("SD_FORCE_OCCT").is_some() {
                     return m;
                 }
-                // Per-part quality gate. Measured across 150 vault parts, the
-                // OCCT path produces more fully-watertight parts (110 vs 101)
-                // and far fewer flipped edges (12 vs 2,565), but when a face's
-                // trim collapses in transfer it fails big: a handful of parts
-                // carried 38k open edges. Where the OCCT mesh looks unhealthy,
-                // mesh natively too and keep whichever has fewer open edges.
+                // Per-part render-quality gate. Two failure modes show up in
+                // a picture: an open edge you can see through, and fabricated
+                // or missing surface. Across 150 vault parts the OCCT path
+                // draws fewer visible gaps, but when a face's trim collapses
+                // in transfer it fails big -- a handful of parts carried 38k
+                // open edges -- so every part is checked against the native
+                // mesh and the better-looking one ships.
                 // Open edges alone are not enough: a mistrimmed face that got
-                // CAPPED reads as fewer holes while fabricating surface that
+                // CAPPED reads as fewer gaps while fabricating surface that
                 // is not there -- measured on a screw whose drive recess came
                 // back gashed and filled, yet "won" the old gate. Fabricated
                 // surface is area, so area is part of the score. The native
                 // mesh only ever *drops* faces, never invents them, which
                 // makes its area a usable reference.
                 let native = tess::tessellate(graph, tol);
-                let (ro, rn) = (m.manifold_report(), native.manifold_report());
+                let (ro, rn) = (m.edge_report(), native.edge_report());
                 let (ao, an) = (m.surface_area(), native.surface_area());
                 // The two paths fail differently: OCCT can cap a mistrimmed
                 // face (area appears) or lose one entirely (area vanishes);
@@ -150,7 +151,7 @@ pub fn tessellate(graph: &Graph, tol: Option<f64>) -> Mesh {
                 // visible (native's holes) over one whose failure mode is
                 // silent (fabricated or missing skin).
                 let agree = an > 0.0 && ((ao - an) / an).abs() < 0.02;
-                return if agree && ro.boundary <= rn.boundary {
+                return if agree && ro.open <= rn.open {
                     m
                 } else {
                     native

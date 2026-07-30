@@ -305,5 +305,5 @@ perspective.
 
 Test corpus: `samples/fetch.sh` (public, includes 2 legacy OLE2 negatives)
 plus vault parts. Golden checks: ring part volume = 5.105e-5 m³ ±0.5%;
-watertightness (boundary-edge count) on the simple sample parts; 19/20 vault
+open-edge counts on the simple sample parts; 19/20 vault
 blobs parse with faces.

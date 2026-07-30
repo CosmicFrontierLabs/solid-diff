@@ -327,58 +327,48 @@ impl Mesh {
     }
 }
 
-/// Result of the directed-edge manifold check.
+/// Edge accounting for a rendered mesh, by the directed-edge rule.
 ///
-/// In a closed, consistently-oriented triangle mesh every directed edge
-/// `a -> b` appears exactly once, and its opposite `b -> a` appears exactly
-/// once on the neighbouring triangle. Checking direction rather than just
-/// counting undirected edges catches three distinct defects at once: holes,
-/// non-manifold junctions, and neighbours whose winding disagrees.
+/// This is a rendering tool, so the report exists to answer one question:
+/// where will the picture be wrong? An open edge is a place you can see
+/// through the part. The other counts are kept because they explain *why*
+/// gaps appear and make regressions attributable, not as goals in
+/// themselves.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct ManifoldReport {
+pub struct EdgeReport {
     pub triangles: usize,
-    /// Directed edges with no opposite: the mesh has a hole here.
-    pub boundary: usize,
-    /// Directed edges traversed the same way by two triangles, i.e. the two
-    /// share an edge but wind oppositely — one of them is flipped.
-    pub flipped: usize,
-    /// Undirected edges shared by more than two triangles.
-    pub non_manifold: usize,
+    /// Directed edges with no opposite: a visible gap starts here.
+    pub open: usize,
+    /// Directed edges traversed the same way by two triangles: the
+    /// neighbours disagree on winding. Invisible under two-sided shading.
+    pub reversed: usize,
+    /// Undirected edges shared by more than two triangles: overlapping
+    /// surface, which renders the same as one copy.
+    pub overshared: usize,
     /// Triangles with a repeated vertex.
     pub degenerate: usize,
 }
 
-impl ManifoldReport {
-    /// A closed, consistently-oriented, manifold surface.
-    pub fn is_watertight(&self) -> bool {
-        self.boundary == 0 && self.flipped == 0 && self.non_manifold == 0 && self.degenerate == 0
-    }
-}
-
-impl std::fmt::Display for ManifoldReport {
+impl std::fmt::Display for EdgeReport {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.is_watertight() {
-            return write!(f, "watertight ({} triangles)", self.triangles);
-        }
         write!(
             f,
-            "not watertight: {} boundary, {} flipped, {} non-manifold, {} degenerate \
-             (of {} triangles)",
-            self.boundary, self.flipped, self.non_manifold, self.degenerate, self.triangles
+            "edges: {} open, {} reversed, {} shared>2, {} degenerate (of {} triangles)",
+            self.open, self.reversed, self.overshared, self.degenerate, self.triangles
         )
     }
 }
 
 impl Mesh {
-    /// Check the mesh with the directed-edge rule; see [`ManifoldReport`].
+    /// Classify every edge once; see [`EdgeReport`].
     ///
     /// Each undirected edge is classified once, so the counts do not overlap:
-    /// used by one triangle is a hole, by two triangles traversing it the same
-    /// way is a winding mismatch, by more than two is non-manifold.
-    pub fn manifold_report(&self) -> ManifoldReport {
+    /// used by one triangle is open, by two triangles traversing it the same
+    /// way is reversed, by more than two is overshared.
+    pub fn edge_report(&self) -> EdgeReport {
         // (total uses, uses in the low->high direction)
         let mut edges: HashMap<(u32, u32), (u32, u32)> = HashMap::new();
-        let mut r = ManifoldReport {
+        let mut r = EdgeReport {
             triangles: self.triangles.len(),
             ..Default::default()
         };
@@ -397,15 +387,15 @@ impl Mesh {
         }
         for &(total, forward) in edges.values() {
             match total {
-                1 => r.boundary += 1,
+                1 => r.open += 1,
                 2 => {
                     // Both uses in the same direction: the two triangles
                     // sharing this edge are wound opposite to each other.
                     if forward != 1 {
-                        r.flipped += 1;
+                        r.reversed += 1;
                     }
                 }
-                _ => r.non_manifold += 1,
+                _ => r.overshared += 1,
             }
         }
         r
@@ -413,7 +403,7 @@ impl Mesh {
 }
 
 #[cfg(test)]
-mod manifold_tests {
+mod edge_report_tests {
     use super::*;
 
     /// Closed, consistently-wound tetrahedron.
@@ -432,22 +422,26 @@ mod manifold_tests {
     }
 
     #[test]
-    fn closed_solid_is_watertight() {
-        let r = tetra().manifold_report();
-        assert!(r.is_watertight(), "{r}");
-        assert_eq!(r.triangles, 4);
-        assert_eq!(r.boundary, 0);
+    fn closed_solid_has_no_defective_edges() {
+        let r = tetra().edge_report();
+        assert_eq!(
+            r,
+            EdgeReport {
+                triangles: 4,
+                ..Default::default()
+            },
+            "{r}"
+        );
     }
 
     #[test]
-    fn a_hole_shows_up_as_boundary_edges() {
+    fn a_missing_triangle_shows_up_as_open_edges() {
         let mut m = tetra();
         m.triangles.pop();
         m.face_ids.pop();
-        let r = m.manifold_report();
-        assert!(!r.is_watertight());
-        assert_eq!(r.boundary, 3, "the three edges of the missing face: {r}");
-        assert_eq!(r.flipped, 0);
+        let r = m.edge_report();
+        assert_eq!(r.open, 3, "the three edges of the missing face: {r}");
+        assert_eq!(r.reversed, 0);
     }
 
     #[test]
@@ -456,12 +450,11 @@ mod manifold_tests {
         // two users. Only the direction reveals the flip.
         let mut m = tetra();
         m.triangles[3] = [1, 3, 2];
-        let r = m.manifold_report();
+        let r = m.edge_report();
         assert_eq!(
-            r.flipped, 3,
+            r.reversed, 3,
             "3 edges now traversed the same way twice: {r}"
         );
-        assert!(!r.is_watertight());
         assert_eq!(
             m.boundary_edge_count(),
             0,
@@ -470,16 +463,16 @@ mod manifold_tests {
     }
 
     #[test]
-    fn non_manifold_and_degenerate_are_reported() {
+    fn overshared_and_degenerate_are_reported() {
         let mut m = tetra();
         m.vertices.push([1.0, 1.0, 1.0]);
         m.triangles.push([0, 1, 4]); // a fin on an existing edge
         m.face_ids.push(5);
         m.triangles.push([2, 2, 3]); // degenerate
         m.face_ids.push(6);
-        let r = m.manifold_report();
+        let r = m.edge_report();
         assert_eq!(r.degenerate, 1, "{r}");
-        assert!(r.non_manifold >= 1, "edge 0-1 now has three users: {r}");
+        assert!(r.overshared >= 1, "edge 0-1 now has three users: {r}");
     }
 }
 
@@ -505,11 +498,11 @@ mod orient_tests {
     fn one_reversed_face_is_repaired() {
         let mut m = tetra();
         m.triangles[2].swap(1, 2);
-        assert_eq!(m.manifold_report().flipped, 3, "setup: three bad edges");
+        assert_eq!(m.edge_report().reversed, 3, "setup: three bad edges");
         m.orient();
-        let r = m.manifold_report();
-        assert_eq!(r.flipped, 0, "orient must make neighbours agree: {r}");
-        assert!(r.is_watertight(), "{r}");
+        let r = m.edge_report();
+        assert_eq!(r.reversed, 0, "orient must make neighbours agree: {r}");
+        assert_eq!(r.open, 0, "{r}");
     }
 
     #[test]
@@ -534,7 +527,7 @@ mod orient_tests {
         }
         assert!(m.signed_volume() < 0.0);
         m.orient();
-        assert_eq!(m.manifold_report().flipped, 0);
+        assert_eq!(m.edge_report().reversed, 0);
         assert!(
             m.signed_volume() > 0.0,
             "a lone closed shell must enclose positive volume"
@@ -551,7 +544,7 @@ mod orient_tests {
             m.triangles[i].swap(1, 2);
         }
         m.orient();
-        assert_eq!(m.manifold_report().flipped, 0);
+        assert_eq!(m.edge_report().reversed, 0);
         assert!(m.signed_volume() > 0.0);
     }
 
