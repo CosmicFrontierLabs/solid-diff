@@ -7,6 +7,34 @@ use std::path::Path;
 use crate::geom::{cross, norm, scale, sub, P3};
 use crate::value::NodeId;
 
+/// Does the +x ray from `o` pass through triangle `abc`?
+///
+/// Half-open on the projected edges (the same convention the UV classifier
+/// uses) so a ray grazing a shared edge is counted by exactly one of the two
+/// triangles that share it.
+fn ray_x_hits(o: [f64; 3], a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> bool {
+    // Project to the yz plane and do a 2D point-in-triangle with orientation
+    // tests; then require the crossing to be ahead of the origin in x.
+    let sign = |p: [f64; 2], q: [f64; 2], r: [f64; 2]| -> f64 {
+        (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
+    };
+    let p = [o[1], o[2]];
+    let (pa, pb, pc) = ([a[1], a[2]], [b[1], b[2]], [c[1], c[2]]);
+    let (d1, d2, d3) = (sign(p, pa, pb), sign(p, pb, pc), sign(p, pc, pa));
+    let strictly_in = (d1 > 0.0 && d2 > 0.0 && d3 > 0.0) || (d1 < 0.0 && d2 < 0.0 && d3 < 0.0);
+    if !strictly_in {
+        return false;
+    }
+    // Barycentric interpolation of the crossing's x.
+    let area = sign(pa, pb, pc);
+    if area == 0.0 {
+        return false;
+    }
+    let (wa, wb, wc) = (d2 / area, d3 / area, d1 / area);
+    let x = wa * a[0] + wb * b[0] + wc * c[0];
+    x > o[0]
+}
+
 #[derive(Default)]
 pub struct Mesh {
     pub vertices: Vec<P3>,
@@ -34,13 +62,14 @@ impl Mesh {
     /// purely combinatorial test. Flood filling that relation orients each
     /// connected piece up to one global sign per piece.
     ///
-    /// That remaining sign is settled by majority vote against the winding the
-    /// per-face rule produced, not by forcing the enclosed volume positive.
-    /// Volume looks like the principled choice and is not: the shell of an
-    /// internal void is closed and encloses *negative* volume by design, so
-    /// forcing it positive turns the void inside out. Measured -- it inverted
-    /// two bodies in the corpus. The per-face rule is right far more often
-    /// than not, so trusting its majority keeps voids intact.
+    /// The remaining sign per piece follows a convention, not a vote: the
+    /// embedding decides. A component at even nesting depth is an outer
+    /// boundary and must enclose positive volume; one at odd depth is the
+    /// wall of a cavity and must enclose negative volume. Depth is measured
+    /// by ray parity against the *other* components, so no part of this
+    /// trusts the per-face winding rule at all -- an earlier version voted on
+    /// that rule and was majority-wrong on a part whose faces mostly wound
+    /// inward, shipping it inside out.
     pub fn orient(&mut self) {
         if self.triangles.is_empty() {
             return;
@@ -100,21 +129,88 @@ impl Mesh {
             components += 1;
         }
 
-        // Per component: if making it consistent would flip most of its
-        // triangles, invert the whole component instead, so the piece keeps
-        // the orientation the majority of faces already had.
-        let mut total = vec![0usize; components];
-        let mut flipped = vec![0usize; components];
+        // Apply the consistency flips first, so each component is a coherent
+        // 2-manifold whose signed volume means something.
         for ti in 0..n {
-            total[component[ti]] += 1;
             if flip[ti] {
-                flipped[component[ti]] += 1;
+                self.triangles[ti].swap(1, 2);
             }
         }
+
+        // Signed volume and boundary count per component.
+        let mut vol = vec![0.0f64; components];
+        let mut open_edges = vec![0usize; components];
+        let mut tris_per = vec![0usize; components];
+        for (ti, t) in self.triangles.iter().enumerate() {
+            let (a, b, c) = (
+                self.vertices[t[0] as usize],
+                self.vertices[t[1] as usize],
+                self.vertices[t[2] as usize],
+            );
+            vol[component[ti]] += crate::geom::dot(a, cross(b, c)) / 6.0;
+            tris_per[component[ti]] += 1;
+        }
+        for list in users.values() {
+            if list.len() == 1 {
+                open_edges[component[list[0].0]] += 1;
+            }
+        }
+
+        // Nesting depth of each component: parity of ray crossings against
+        // every OTHER component. The ray leaves from just outside the
+        // component's own +x extreme, pointing further +x, so it cannot hit
+        // its own surface and leaves the scene cleanly.
+        let mut seed_pt = vec![[f64::NEG_INFINITY; 3]; components];
+        for (ti, t) in self.triangles.iter().enumerate() {
+            let ci = component[ti];
+            for vi in t {
+                let v = self.vertices[*vi as usize];
+                if v[0] > seed_pt[ci][0] {
+                    seed_pt[ci] = v;
+                }
+            }
+        }
+        let mut depth = vec![0usize; components];
+        for ci in 0..components {
+            // Nudge past the surface; scale-free epsilon from the seed itself.
+            let eps = 1e-9 * (1.0 + seed_pt[ci][0].abs());
+            let origin = [seed_pt[ci][0] + eps, seed_pt[ci][1], seed_pt[ci][2]];
+            let mut crossings = 0usize;
+            for (ti, t) in self.triangles.iter().enumerate() {
+                if component[ti] == ci {
+                    continue;
+                }
+                let (a, b, c) = (
+                    self.vertices[t[0] as usize],
+                    self.vertices[t[1] as usize],
+                    self.vertices[t[2] as usize],
+                );
+                if ray_x_hits(origin, a, b, c) {
+                    crossings += 1;
+                }
+            }
+            depth[ci] = crossings % 2;
+        }
+
+        // The convention: outward at even depth, inward at odd. Components
+        // that are substantially open, or enclose no volume to speak of, make
+        // no claim and keep the orientation consistency gave them.
+        let (blo, bhi) = self.bounds();
+        let scale3 = (0..3)
+            .map(|i| bhi[i] - blo[i])
+            .fold(0.0f64, f64::max)
+            .powi(3)
+            .max(1e-300);
         for ti in 0..n {
             let ci = component[ti];
-            let invert = flipped[ci] * 2 > total[ci];
-            if flip[ti] != invert {
+            if open_edges[ci] * 10 >= tris_per[ci].max(1) {
+                continue; // open sheet: volume is meaningless
+            }
+            if vol[ci].abs() < scale3 * 1e-9 {
+                continue; // degenerate enclosure
+            }
+            let want_positive = depth[ci] == 0;
+            if (vol[ci] > 0.0) != want_positive {
                 self.triangles[ti].swap(1, 2);
             }
         }
@@ -427,35 +523,62 @@ mod orient_tests {
     }
 
     #[test]
-    fn a_wholly_inverted_shell_keeps_its_sign() {
-        // Every face reversed: consistent already, so orient has nothing to
-        // repair and must not "correct" the volume. An internal void is
-        // exactly this shape, and forcing its volume positive would turn the
-        // void inside out.
+    fn a_lone_inverted_shell_is_turned_right_side_out() {
+        // A mesh that is one closed component with negative volume can only
+        // be inside out: a genuine void needs an enclosing shell, and there
+        // is none here. This is the exact failure seen on a vault part where
+        // the per-face rule was wrong for MOST faces and the majority vote
+        // dutifully inverted the whole body.
         let mut m = tetra();
         for t in &mut m.triangles {
             t.swap(1, 2);
         }
-        let before = m.signed_volume();
-        assert!(before < 0.0);
+        assert!(m.signed_volume() < 0.0);
         m.orient();
         assert_eq!(m.manifold_report().flipped, 0);
         assert!(
-            m.signed_volume() < 0.0,
-            "an inverted-but-consistent shell must keep its orientation"
+            m.signed_volume() > 0.0,
+            "a lone closed shell must enclose positive volume"
         );
     }
 
     #[test]
-    fn majority_decides_the_global_sign() {
-        // Three of four faces reversed: the majority is the reversed set, so
-        // the repaired mesh should follow them rather than the lone original.
+    fn consistency_then_convention_fixes_the_sign() {
+        // Three of four faces reversed: flood fill makes the shell
+        // consistent, then the nesting convention turns it outward. No vote
+        // anywhere -- the embedding decides.
         let mut m = tetra();
         for i in [0, 1, 2] {
             m.triangles[i].swap(1, 2);
         }
         m.orient();
         assert_eq!(m.manifold_report().flipped, 0);
-        assert!(m.signed_volume() < 0.0);
+        assert!(m.signed_volume() > 0.0);
+    }
+
+    #[test]
+    fn a_void_inside_a_shell_stays_a_void() {
+        // Outer tetra plus a smaller inverted tetra inside it: the global
+        // flip must act on the TOTAL volume (positive here), leaving the
+        // void's orientation alone. This is why the correction is global
+        // rather than per component.
+        let mut m = tetra();
+        let base = m.vertices.len() as u32;
+        for v in tetra().vertices {
+            m.vertices
+                .push([0.25 + v[0] * 0.2, 0.25 + v[1] * 0.2, 0.25 + v[2] * 0.2]);
+        }
+        for t in tetra().triangles {
+            // inverted: a void's normals point into the enclosed material
+            m.triangles.push([base + t[0], base + t[2], base + t[1]]);
+            m.face_ids.push(9);
+        }
+        let before = m.signed_volume();
+        assert!(before > 0.0, "outer minus void is still positive");
+        m.orient();
+        assert!(
+            (m.signed_volume() - before).abs() < 1e-12,
+            "orientation of a consistent outer+void pair must not change"
+        );
     }
 }
