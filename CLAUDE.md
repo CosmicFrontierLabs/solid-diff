@@ -87,21 +87,23 @@ themselves, so a wrong answer can be detected as wrong:
   an involution with opposite senses over one edge, and loops close through
   `backward` covering exactly their member halfedges.
 - **Budgets, never snapshots**, for what is still wrong — `INTERSECTION`
-  curves, `BLENDED_EDGE` surfaces, and corpus-wide hole/flip/non-manifold
-  counts. These may only ever be *lowered*; lower them in the same commit that
+  curves, `BLENDED_EDGE` surfaces, and the corpus-wide open-edge count. These may only ever be *lowered*; lower them in the same commit that
   earns it. They are not per-part output, because that would fight every
   legitimate improvement.
 
 The split is deliberate: assert exactly where the maths says the answer is
 exact, ratchet where we know we are approximating.
 
-## Measuring mesh quality
+## Measuring render quality
 
-`solid-diff mesh --stats` reports the directed-edge manifold check. Use it,
-not eyeballing: counting undirected edges only finds holes, and a face wound
-backwards keeps two users per edge so the naive count calls it closed. The
-report classifies each undirected edge once — hole, winding mismatch,
-non-manifold, or degenerate — so the numbers do not overlap.
+This is a rendering tool, not a meshing one: the number that matters is
+**open edges** — places you can see through the part. `solid-diff mesh
+--stats` prints the edge report (open / reversed / shared>2 / degenerate,
+each undirected edge classified once). Reversed winding is invisible under
+two-sided shading and overlapping surface renders as one copy, so neither is
+a goal; they are printed because they explain *why* gaps appear. Do not
+reintroduce closed-mesh ("watertightness") objectives — pursuing them has
+repeatedly cost visible quality here.
 
 ## Conventions worth knowing
 

@@ -34,9 +34,9 @@ Rendering all 1536 into 24 isometric contact sheets takes **118 s wall**
 
 That is **26.5 million triangles** with no crash, hang or unbounded
 allocation anywhere in the run. Median part is 5,943 triangles; the largest
-is 641,978. Mesh quality at scale is the honest weak spot: only 7.6% of
-parts come out fully watertight and the median part has 92 open edges,
-which is what #7 (constrained Delaunay) and #5 are about.
+is 641,978. Render quality at scale is the honest weak spot: the median part
+has 92 open edges (visible gaps), which is what #7 (constrained Delaunay)
+and #5 are about.
 
 Notably the one file that OOM-killed the old prototype's sweep at 37.8 GB (#1)
 takes well under a second here — it carries no geometry at all, so that OOM
@@ -62,20 +62,21 @@ name is hardcoded (streams are ranked by face count).
 
 ### Mesh quality (36-part working corpus)
 
-Measured with the directed-edge check (#19): every undirected edge is
-classified once, so the counts do not overlap.
+Measured with the directed-edge report (#19): every undirected edge is
+classified once, so the counts do not overlap. Only open edges are visible
+in a render; the other classes are diagnostic.
 
 | | before #20 | now |
 |---|---|---|
-| holes (edge used by one triangle) | 6,023 | **3,354** |
-| non-manifold (edge used by >2) | 8,405 | **98** |
-| winding mismatches | 7,854 | 10,468 |
+| open edges (edge used by one triangle) | 6,023 | **3,354** |
+| shared>2 (edge used by >2 triangles) | 8,405 | **98** |
+| reversed (neighbours disagree on winding) | 7,854 | 10,468 |
 
-Constrained Delaunay plus flood-fill trimming (#20) nearly halved the holes
-and all but eliminated non-manifold junctions. The rise in winding mismatches
-is disclosure rather than regression: with edges now actually meeting,
-orientation errors that used to present as holes surface as what they are.
-**No part is yet fully watertight**, and face-level orientation (#21) is the
+Constrained Delaunay plus flood-fill trimming (#20) nearly halved the open
+edges and all but eliminated over-shared junctions. The rise in reversed
+edges is disclosure rather than regression: with edges now actually meeting,
+orientation errors that used to present as gaps surface as what they are.
+Open edges remain on every part, and face-level orientation (#21) is the
 biggest remaining defect class.
 
 ## Open work
@@ -102,9 +103,9 @@ Fixed since the last revision of this document:
 
 | | was | now |
 |---|---|---|
-| winding mismatches (corpus) | 10,468 | **54** |
-| holes (corpus) | 4,201 | 4,092 |
-| non-manifold (corpus) | 98 | 25 |
+| reversed edges (corpus) | 10,468 | **54** |
+| open edges (corpus) | 4,201 | 4,092 |
+| shared>2 edges (corpus) | 98 | 25 |
 | INTERSECTION off-surface | 96/226 | **11/226** |
 | worst INTERSECTION error | 9.2e-2 | **3.1e-3** x model scale |
 | SP_CURVE nodes evaluated | 0 | **4,211** |

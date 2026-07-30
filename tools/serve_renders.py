@@ -375,7 +375,7 @@ def stat_line(name: str) -> str:
     """One-line summary pulled out of `mesh --stats` output."""
     txt = STATS.get(name, "")
     for ln in txt.splitlines():
-        if "watertight" in ln or "boundary" in ln:
+        if "edges:" in ln or "boundary" in ln:
             return ln.strip()
     return txt.splitlines()[-1].strip() if txt else "(not measured yet)"
 

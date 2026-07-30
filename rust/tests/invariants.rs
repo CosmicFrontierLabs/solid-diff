@@ -156,7 +156,7 @@ impl Tally {
 
 /// Halfedge pairing is an involution, the pair straddles one edge, and the two
 /// senses are opposite. This is what makes "two triangles per edge" meaningful
-/// downstream; if it did not hold, watertightness would be unreachable no
+/// downstream; if it did not hold, a gap-free render would be unreachable no
 /// matter how good the tessellation was.
 #[test]
 fn halfedge_pairing_is_an_involution() {
@@ -640,37 +640,20 @@ fn mesh_vertices_lie_on_their_source_surface() {
     );
 }
 
-/// Whole-corpus mesh quality, as a ratchet.
+/// Whole-corpus render quality, as a ratchet.
 ///
-/// Only holes are gated. This tool renders pictures, and the three defect
-/// classes are not equally visible:
-///
-/// * **holes** show. A missing triangle is a hole you can see through, and it
-///   is the one class worth blocking a change over.
-/// * **winding mismatches** do not. `iso` shades two-sided
-///   (`0.22 + 0.78*|N.L|`), so a reversed triangle is pixel-identical to a
-///   correct one. There are ~14,000 of them across 400 vault parts and not
-///   one is visible.
-/// * **non-manifold** junctions are overlaps, and two coincident surfaces
-///   render as one.
-///
-/// Gating on the invisible two was actively harmful: a seam repair that
-/// visibly fixed the angled bores on 570112-99 was rejected for costing 590
-/// winding mismatches, having improved the picture. They are still reported,
-/// because a sudden jump is worth knowing about, but they no longer fail the
-/// build.
+/// One number gates: **open edges** -- places you can see through the part.
+/// This is a rendering tool, so that is the defect class worth blocking a
+/// change over. Reversed winding is pixel-identical under two-sided shading
+/// and overlapping surface renders the same as one copy, so neither is
+/// tracked here at all; when a render looks wrong, the edge report on the
+/// offending part is the diagnostic, not a corpus aggregate.
 const MESH_BUDGET: &[(&str, usize)] = &[
-    // Joining the missing seam (#39) took these down by three quarters:
-    // holes 4175 -> 1025, winding 54 -> 0, non-manifold 25 -> 6. Across 400
-    // vault parts, fully watertight went from 46 to 226.
-    // 1025 after the seam fix; aligning loops by smallest combined extent
-    // rather than by matching means took it to 918.
-    ("holes", 918),
+    // 4,175 before the seam join, 1,025 after it, 918 after loop alignment
+    // by smallest combined extent.
+    ("open edges", 918),
     ("parts that fail to mesh", 3),
 ];
-
-/// Reported every run, never gated: see the note on MESH_BUDGET.
-const MESH_REPORTED: &[&str] = &["winding mismatches", "non-manifold"];
 
 #[test]
 fn corpus_mesh_quality_does_not_regress() {
@@ -678,7 +661,7 @@ fn corpus_mesh_quality_does_not_regress() {
     if parts.is_empty() {
         return;
     }
-    let (mut holes, mut flips, mut nonmani, mut failed, mut tris) = (0, 0, 0, 0, 0);
+    let (mut open, mut failed, mut tris) = (0, 0, 0);
 
     for p in &parts {
         // The budgets ratchet the NATIVE tessellator. The OCCT path is gated
@@ -695,28 +678,16 @@ fn corpus_mesh_quality_does_not_regress() {
             .map(|g| solid_diff::tess::tessellate(&g, None));
         match native.ok_or(()) {
             Ok(m) if !m.is_empty() => {
-                let r = m.manifold_report();
-                holes += r.boundary;
-                flips += r.flipped;
-                nonmani += r.non_manifold;
+                open += m.edge_report().open;
                 tris += m.triangles.len();
             }
             _ => failed += 1,
         }
     }
-    let got = [
-        ("holes", holes),
-        ("winding mismatches", flips),
-        ("non-manifold", nonmani),
-        ("parts that fail to mesh", failed),
-    ];
+    let got = [("open edges", open), ("parts that fail to mesh", failed)];
     eprintln!("corpus: {} parts, {tris} triangles", parts.len());
     let mut over = Vec::new();
     for (name, n) in got.iter() {
-        if MESH_REPORTED.contains(name) {
-            eprintln!("  {name:<24} {n:>7}  (reported, not gated)");
-            continue;
-        }
         let Some((_, budget)) = MESH_BUDGET.iter().find(|(b, _)| b == name) else {
             continue;
         };

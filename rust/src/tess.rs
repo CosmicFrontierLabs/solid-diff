@@ -1701,7 +1701,7 @@ fn tessellate_face(
     // Orient outward: parametric normal x surface sense x face sense. Decided
     // by an area-weighted vote over every triangle rather than from a single
     // one -- near a pole or on a sliver the surface normal is unreliable, and
-    // one bad sample used to flip an entire face, which the manifold check
+    // one bad sample used to flip an entire face, which the edge report
     // then sees as every shared edge of that face being wound the wrong way.
     let mut vote = 0.0f64;
     for t in tris.iter() {

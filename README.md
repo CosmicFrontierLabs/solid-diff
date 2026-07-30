@@ -34,8 +34,7 @@ exact surfaces + sampled boundary polylines) and meshed by OCCT
 properly. Every part is gated: if the OCCT mesh comes back with more open
 edges than the native tessellator produces, the native mesh is used instead,
 so the pipeline is never worse than what it replaced. Measured across 150
-vault parts: holes 4,360 -> 2,791, fully watertight parts 101 -> 117, flipped
-edges 2,565 -> 2,539, non-manifold 286 -> 153.
+vault parts, visible gaps (open edges) fell from 4,360 to 2,791.
 
 The tests assert invariants the part files state about themselves rather than
 any recorded reference output — see `rust/tests/invariants.rs`. For coverage
