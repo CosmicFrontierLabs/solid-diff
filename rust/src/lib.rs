@@ -123,13 +123,32 @@ pub fn tessellate(graph: &Graph, tol: Option<f64>) -> Mesh {
                 // trim collapses in transfer it fails big: a handful of parts
                 // carried 38k open edges. Where the OCCT mesh looks unhealthy,
                 // mesh natively too and keep whichever has fewer open edges.
-                let r = m.manifold_report();
-                if r.boundary == 0 {
-                    return m;
-                }
+                // Open edges alone are not enough: a mistrimmed face that got
+                // CAPPED reads as fewer holes while fabricating surface that
+                // is not there -- measured on a screw whose drive recess came
+                // back gashed and filled, yet "won" the old gate. Fabricated
+                // surface is area, so area is part of the score. The native
+                // mesh only ever *drops* faces, never invents them, which
+                // makes its area a usable reference.
                 let native = tess::tessellate(graph, tol);
-                let rn = native.manifold_report();
-                return if rn.boundary < r.boundary { native } else { m };
+                let (ro, rn) = (m.manifold_report(), native.manifold_report());
+                let (ao, an) = (m.surface_area(), native.surface_area());
+                // The two paths fail differently: OCCT can cap a mistrimmed
+                // face (area appears) or lose one entirely (area vanishes);
+                // the native trimmer can leak past a boundary (area appears)
+                // but never invents faces. When the two areas agree, the
+                // surfaces they measured are the same and the open-edge count
+                // is a fair referee. When they disagree by more than a couple
+                // of percent, one of them mis-trimmed something big, and the
+                // conservative choice is the mesh whose failure mode is
+                // visible (native's holes) over one whose failure mode is
+                // silent (fabricated or missing skin).
+                let agree = an > 0.0 && ((ao - an) / an).abs() < 0.02;
+                return if agree && ro.boundary <= rn.boundary {
+                    m
+                } else {
+                    native
+                };
             }
         }
     }
