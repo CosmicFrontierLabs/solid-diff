@@ -191,9 +191,22 @@ impl EdgeSampler {
 
         let curve = curve_node
             .and_then(|n| make_curve(graph, n))
-            // Parasolid stores plenty of EDGEs with a null curve pointer. The
-            // geometry is not missing, only implicit: the edge is where its
-            // two faces meet, and both surfaces are evaluable (#25).
+            // An EDGE with a null curve pointer often still has geometry in
+            // the file: each of its fins can carry its own curve (typically a
+            // TRIMMED_CURVE over an SP_CURVE in the bordering face's parameter
+            // space). That is the file's answer, so it outranks our
+            // reconstruction. The Clamp_Ring family stores every band-to-band
+            // wrap edge this way; without the fins those edges collapsed to
+            // straight chords across the whole ring.
+            .or_else(|| {
+                let he_neg = he_pos.and_then(|h| graph.deref(h, "other"));
+                [he_pos, he_neg]
+                    .into_iter()
+                    .flatten()
+                    .find_map(|h| graph.deref(h, "curve").and_then(|n| make_curve(graph, n)))
+            })
+            // Failing that, the edge is where its two faces meet, and both
+            // surfaces are evaluable: intersect them (#25).
             .or_else(|| reconstruct_edge(graph, edge, p_start, p_end));
         let entry = match curve {
             None => match (p_start, p_end) {
