@@ -4,7 +4,7 @@
 //! Pipeline (see `docs/FORMAT.md`):
 //! ```text
 //! .SLDPRT --container--> streams --sections--> XT transmit --xt--> nodes
-//!         --graph--> topology --geom+tess--> Mesh --render--> SVG
+//!         --graph--> topology --step--> STEP --occt--> Mesh --render--> SVG
 //! ```
 
 pub mod anim;
@@ -15,13 +15,12 @@ pub mod geom;
 pub mod graph;
 pub mod iso;
 pub mod mesh;
-#[cfg(feature = "occt")]
 pub mod occt;
 pub mod pdm;
 pub mod render;
+pub mod sample;
 pub mod sections;
 pub mod step;
-pub mod tess;
 pub mod value;
 pub mod xt;
 
@@ -105,61 +104,14 @@ pub fn body_graphs(path: &Path) -> Result<Vec<BodyGraph>> {
     Ok(out)
 }
 
-/// Tessellate the best body graph in a part file (or a bare `.x_b`).
-/// Tessellate a body graph by the best available means.
+/// Tessellate a body graph: export the B-rep to STEP and mesh it with
+/// OpenCASCADE, whose reader-side shape healing (pcurves, seams, wire
+/// orientation) closes trimmed periodic faces properly.
 ///
-/// With the `occt` feature (the default) the B-rep is exported to STEP and
-/// meshed by OpenCASCADE, whose shape healing closes trimmed periodic faces
-/// properly. The native tessellator remains as the fallback for bodies the
-/// round trip cannot carry, and behind `SD_NO_OCCT=1` for A/B measurement.
+/// An empty mesh means the round trip produced nothing renderable for this
+/// body; callers already treat an empty mesh as a failed part.
 pub fn tessellate(graph: &Graph, tol: Option<f64>) -> Mesh {
-    #[cfg(feature = "occt")]
-    {
-        if std::env::var_os("SD_NO_OCCT").is_none() {
-            if let Some(m) = occt::tessellate(graph, tol) {
-                // Measurement bypass: how does the OCCT mesh look before the
-                // gate? Refinements to the exporter are invisible in gated
-                // corpus numbers whenever the gate rejects both versions.
-                if std::env::var_os("SD_FORCE_OCCT").is_some() {
-                    return m;
-                }
-                // Per-part render-quality gate. Two failure modes show up in
-                // a picture: an open edge you can see through, and fabricated
-                // or missing surface. Across 150 vault parts the OCCT path
-                // draws fewer visible gaps, but when a face's trim collapses
-                // in transfer it fails big -- a handful of parts carried 38k
-                // open edges -- so every part is checked against the native
-                // mesh and the better-looking one ships.
-                // Open edges alone are not enough: a mistrimmed face that got
-                // CAPPED reads as fewer gaps while fabricating surface that
-                // is not there -- measured on a screw whose drive recess came
-                // back gashed and filled, yet "won" the old gate. Fabricated
-                // surface is area, so area is part of the score. The native
-                // mesh only ever *drops* faces, never invents them, which
-                // makes its area a usable reference.
-                let native = tess::tessellate(graph, tol);
-                let (ro, rn) = (m.edge_report(), native.edge_report());
-                let (ao, an) = (m.surface_area(), native.surface_area());
-                // The two paths fail differently: OCCT can cap a mistrimmed
-                // face (area appears) or lose one entirely (area vanishes);
-                // the native trimmer can leak past a boundary (area appears)
-                // but never invents faces. When the two areas agree, the
-                // surfaces they measured are the same and the open-edge count
-                // is a fair referee. When they disagree by more than a couple
-                // of percent, one of them mis-trimmed something big, and the
-                // conservative choice is the mesh whose failure mode is
-                // visible (native's holes) over one whose failure mode is
-                // silent (fabricated or missing skin).
-                let agree = an > 0.0 && ((ao - an) / an).abs() < 0.02;
-                return if agree && ro.open <= rn.open {
-                    m
-                } else {
-                    native
-                };
-            }
-        }
-    }
-    tess::tessellate(graph, tol)
+    occt::tessellate(graph, tol).unwrap_or_default()
 }
 
 pub fn mesh_file(path: &Path, tol: Option<f64>) -> Result<Mesh> {

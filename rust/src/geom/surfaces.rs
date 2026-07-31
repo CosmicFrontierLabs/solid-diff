@@ -5,7 +5,8 @@
 //! best-fit plane.
 
 use super::curves::{
-    deboor_basis_deriv_into, deboor_basis_into, expand_knots, split_vertices, MAX_DEGREE,
+    deboor_basis_deriv_into, deboor_basis_into, expand_knots, knot_arrays, split_vertices,
+    MAX_DEGREE,
 };
 use super::{
     add, cross, dist, dot, make_curve, norm, scale, sub, unit, Curve, Surface, P2, P3, TWO_PI,
@@ -633,14 +634,10 @@ impl NurbsSurf {
         if nu == 0 || nv == 0 || cp.len() < nu * nv {
             return None;
         }
-        let uknots = expand_knots(
-            &graph.deref(ns, "u_knots")?.f64_vec("knots")?,
-            &graph.deref(ns, "u_knot_mult")?.i64_vec("mult")?,
-        )?;
-        let vknots = expand_knots(
-            &graph.deref(ns, "v_knots")?.f64_vec("knots")?,
-            &graph.deref(ns, "v_knot_mult")?.i64_vec("mult")?,
-        )?;
+        let (uk, um) = knot_arrays(graph.deref(ns, "u_knots")?, graph.deref(ns, "u_knot_mult")?)?;
+        let uknots = expand_knots(&uk, &um)?;
+        let (vk, vm) = knot_arrays(graph.deref(ns, "v_knots")?, graph.deref(ns, "v_knot_mult")?)?;
+        let vknots = expand_knots(&vk, &vm)?;
         if uknots.len() <= nu || uknots.len() <= pu || vknots.len() <= nv || vknots.len() <= pv {
             return None;
         }

@@ -91,10 +91,6 @@ fn halfedge_face<'a>(graph: &'a Graph, he: &'a Node) -> Option<&'a Node> {
     graph.deref(graph.deref(he, "loop")?, "face")
 }
 
-fn face_surface(graph: &Graph, face: &Node) -> Option<Box<dyn Surface>> {
-    make_surface(graph, graph.deref(face, "surface")?)
-}
-
 /// Curves whose evaluation is closed-form, so the only error is floating point.
 const EXACT_CURVES: &[&str] = &["LINE", "CIRCLE", "ELLIPSE", "B_CURVE"];
 
@@ -549,8 +545,6 @@ fn meshing_is_deterministic() {
         return;
     }
     for p in &parts {
-        // Native path explicitly: determinism of the OCCT path is OCCT's
-        // business, and mixing paths mid-test would race the env gate.
         let Ok(mut bodies) = solid_diff::body_graphs(p) else {
             continue;
         };
@@ -558,11 +552,11 @@ fn meshing_is_deterministic() {
             continue;
         }
         let g = bodies.remove(0).graph;
-        let a = solid_diff::tess::tessellate(&g, None);
+        let a = solid_diff::tessellate(&g, None);
         if a.is_empty() {
             continue;
         }
-        let b = solid_diff::tess::tessellate(&g, None);
+        let b = solid_diff::tessellate(&g, None);
         assert_eq!(a.vertices.len(), b.vertices.len(), "{p:?}: vertex count");
         assert_eq!(
             a.triangles.len(),
@@ -580,65 +574,12 @@ fn meshing_is_deterministic() {
     }
 }
 
-/// Mesh vertices must lie on the B-rep surface they were generated from.
-///
-/// Catches the planar fallback silently standing in for a real evaluator, and
-/// any UV mapping that is self-consistent but wrong.
-#[test]
-fn mesh_vertices_lie_on_their_source_surface() {
-    let parts: Vec<PathBuf> = corpus().into_iter().take(8).collect();
-    if parts.is_empty() {
-        return;
-    }
-    let mut t = Tally::default();
-
-    for p in &parts {
-        let name = p.file_name().unwrap().to_string_lossy().to_string();
-        let Ok(mut bodies) = solid_diff::body_graphs(p) else {
-            continue;
-        };
-        if bodies.is_empty() {
-            continue;
-        }
-        let g = bodies.remove(0).graph;
-        let mesh = solid_diff::tess::tessellate(&g, None);
-        if mesh.is_empty() {
-            continue;
-        }
-        let tol = g.model_scale() * 1e-2;
-
-        let mut cache: HashMap<NodeId, Option<Box<dyn Surface>>> = HashMap::new();
-        for (ti, tri) in mesh.triangles.iter().enumerate() {
-            let Some(fid) = mesh.face_ids.get(ti).copied() else {
-                continue;
-            };
-            let surf = cache.entry(fid).or_insert_with(|| {
-                g.by_type("FACE")
-                    .into_iter()
-                    .find(|f| f.id == fid)
-                    .and_then(|f| face_surface(&g, f))
-            });
-            let Some(surf) = surf.as_ref() else { continue };
-            for vi in tri {
-                let v = mesh.vertices[*vi as usize];
-                t.record(dist(surf.eval(surf.inv(v)), v), tol, || {
-                    format!("{name} face {fid}")
-                });
-            }
-        }
-    }
-    eprintln!("{}", t.summary("mesh-vertex-on-surface"));
-    assert!(t.checked > 0, "no meshed triangles to check");
-    assert_eq!(
-        t.failed,
-        0,
-        "{} mesh vertices are further than 1% of model scale from the surface \
-         they were generated on -- the planar fallback is standing in for a real \
-         evaluator, or a UV mapping is self-consistent but wrong. {}",
-        t.failed,
-        t.summary("mesh-vertex-on-surface")
-    );
-}
+// A vertices-lie-on-their-source-surface test used to live here. It guarded
+// the native tessellator's evaluators and UV mappings through the mesh it
+// generated; the OCCT path attributes a whole (possibly split) OCCT face to
+// one probe-matched Parasolid id, so "this vertex is far from its face's
+// surface" no longer distinguishes bad geometry from coarse attribution.
+// The evaluators themselves stay pinned by the redundancy invariants above.
 
 /// Whole-corpus render quality, as a ratchet.
 ///
@@ -649,9 +590,13 @@ fn mesh_vertices_lie_on_their_source_surface() {
 /// tracked here at all; when a render looks wrong, the edge report on the
 /// offending part is the diagnostic, not a corpus aggregate.
 const MESH_BUDGET: &[(&str, usize)] = &[
-    // 4,175 before the seam join, 1,025 after it, 918 after loop alignment
-    // by smallest combined extent.
-    ("open edges", 918),
+    // RESET at the switch to OCCT-only meshing (the native tessellator's
+    // ratchet ended at 918). 85% of this number is two parts whose STEP
+    // transfer collapses -- 03_02-9065501-03 (4,392) and Arm_link_tube
+    // (2,296); the rest of the corpus is at or below the native tail.
+    // Lowering this means fixing the exporter for those parts, not tuning
+    // a gate.
+    ("open edges", 7867),
     ("parts that fail to mesh", 3),
 ];
 
@@ -664,9 +609,7 @@ fn corpus_mesh_quality_does_not_regress() {
     let (mut open, mut failed, mut tris) = (0, 0, 0);
 
     for p in &parts {
-        // The budgets ratchet the NATIVE tessellator. The OCCT path is gated
-        // per part against this one at runtime and measured in its own A/B.
-        let native = solid_diff::body_graphs(p)
+        let mesh = solid_diff::body_graphs(p)
             .ok()
             .and_then(|mut b| {
                 if b.is_empty() {
@@ -675,8 +618,8 @@ fn corpus_mesh_quality_does_not_regress() {
                     Some(b.remove(0).graph)
                 }
             })
-            .map(|g| solid_diff::tess::tessellate(&g, None));
-        match native.ok_or(()) {
+            .map(|g| solid_diff::tessellate(&g, None));
+        match mesh.ok_or(()) {
             Ok(m) if !m.is_empty() => {
                 open += m.edge_report().open;
                 tris += m.triangles.len();
