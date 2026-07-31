@@ -19,13 +19,21 @@
 //!   no closed form, `SP_CURVE`, and edges with a null curve pointer. Both
 //!   faces of an edge reference one polyline, so the shell sews.
 //!
-//! OCCT computes pcurves and heals the topology on import; we do not emit
-//! pcurves at all.
+//! For faces on analytic surfaces OCCT computes pcurves and heals the
+//! topology on import, and we let it. For faces on **B_SURFACE** we emit the
+//! pcurves ourselves (#56): the reader recovers a pcurve by projecting each
+//! 3-D point back onto the surface, and on periodic or steep spline patches
+//! that projection is exactly what keeps failing — the wire gets rejected and
+//! the face is dropped or meshed over its natural bounds. We already hold the
+//! answer (the same sampled points, through `Surface::inv`, in the same knot
+//! space the exported surface uses), so each such edge is written as a
+//! `SURFACE_CURVE`/`SEAM_CURVE` carrying the 3-D polyline *and* its UV image,
+//! sharing one knot vector so the two agree at every sample.
 
 use std::collections::HashMap;
 use std::path::Path;
 
-use crate::geom::{curves::make_curve, P3};
+use crate::geom::{curves::make_curve, P2, P3};
 use crate::graph::Graph;
 use crate::sample::EdgeSampler;
 use crate::value::{Node, NodeId};
@@ -139,6 +147,27 @@ fn list_i(xs: &[usize]) -> String {
     format!("({})", inner.join(","))
 }
 
+/// Chord-length knot vector of a sampled polyline. A pcurve reuses its 3-D
+/// polyline's knots verbatim, so both curves agree exactly at every sample —
+/// that is what keeps the pair inside the reader's SameParameter tolerance.
+fn chord_knots(pts: &[P3]) -> Vec<f64> {
+    let mut knots = Vec::with_capacity(pts.len());
+    let mut acc = 0.0;
+    knots.push(0.0);
+    for i in 1..pts.len() {
+        acc += crate::geom::dist(pts[i], pts[i - 1]).max(1e-12);
+        knots.push(acc);
+    }
+    knots
+}
+
+fn endpoint_mults(n: usize) -> Vec<usize> {
+    let mut mults = vec![1usize; n];
+    mults[0] = 2;
+    *mults.last_mut().unwrap() = 2;
+    mults
+}
+
 /// Degree-1 B-spline through the given points, chord-length parameterized.
 /// This is how every sampled polyline (edge or sweep section) is carried.
 fn polyline_bspline(w: &mut W, pts: &[P3]) -> Option<u32> {
@@ -146,22 +175,29 @@ fn polyline_bspline(w: &mut W, pts: &[P3]) -> Option<u32> {
         return None;
     }
     let ids: Vec<u32> = pts.iter().map(|p| w.cart(*p)).collect();
-    let mut knots = Vec::with_capacity(pts.len());
-    let mut acc = 0.0;
-    knots.push(0.0);
-    for i in 1..pts.len() {
-        let d = crate::geom::dist(pts[i], pts[i - 1]).max(1e-12);
-        acc += d;
-        knots.push(acc);
-    }
-    let mut mults = vec![1usize; pts.len()];
-    mults[0] = 2;
-    *mults.last_mut().unwrap() = 2;
+    let knots = chord_knots(pts);
     Some(w.add(&format!(
         "B_SPLINE_CURVE_WITH_KNOTS('',1,{},.POLYLINE_FORM.,.F.,.F.,{},{},.UNSPECIFIED.)",
         list_u32(&ids),
-        list_i(&mults),
+        list_i(&endpoint_mults(pts.len())),
         list_f(&knots),
+    )))
+}
+
+/// Degree-1 B-spline in parameter space, on the knots of its 3-D twin.
+fn polyline_bspline_2d(w: &mut W, uvs: &[P2], knots: &[f64]) -> Option<u32> {
+    if uvs.len() < 2 || uvs.len() != knots.len() {
+        return None;
+    }
+    let ids: Vec<u32> = uvs
+        .iter()
+        .map(|q| w.add(&format!("CARTESIAN_POINT('',({},{}))", fr(q[0]), fr(q[1]))))
+        .collect();
+    Some(w.add(&format!(
+        "B_SPLINE_CURVE_WITH_KNOTS('',1,{},.POLYLINE_FORM.,.F.,.F.,{},{},.UNSPECIFIED.)",
+        list_u32(&ids),
+        list_i(&endpoint_mults(uvs.len())),
+        list_f(knots),
     )))
 }
 
@@ -222,8 +258,10 @@ fn nurbs_surface(w: &mut W, graph: &Graph, bsurf: &Node) -> Option<u32> {
         return None;
     }
     let (uk, um) = {
-        let knots = graph.deref(ns, "u_knots")?.f64_vec("knots")?;
-        let mult = graph.deref(ns, "u_knot_mult")?.i64_vec("mult")?;
+        let (knots, mult) = crate::geom::curves::knot_arrays(
+            graph.deref(ns, "u_knots")?,
+            graph.deref(ns, "u_knot_mult")?,
+        )?;
         let expanded: Vec<f64> = knots
             .iter()
             .zip(&mult)
@@ -232,8 +270,10 @@ fn nurbs_surface(w: &mut W, graph: &Graph, bsurf: &Node) -> Option<u32> {
         compress_knots(&expanded)
     };
     let (vk, vm) = {
-        let knots = graph.deref(ns, "v_knots")?.f64_vec("knots")?;
-        let mult = graph.deref(ns, "v_knot_mult")?.i64_vec("mult")?;
+        let (knots, mult) = crate::geom::curves::knot_arrays(
+            graph.deref(ns, "v_knots")?,
+            graph.deref(ns, "v_knot_mult")?,
+        )?;
         let expanded: Vec<f64> = knots
             .iter()
             .zip(&mult)
@@ -503,6 +543,15 @@ pub fn export_faces(graph: &Graph, tol: Option<f64>, only: Option<&[NodeId]>) ->
     let mut face_nodes: Vec<NodeId> = Vec::new();
     let mut skipped = 0usize;
 
+    // Pass 1: surface entities, and — for B_SURFACE faces — the UV image of
+    // every boundary edge (#56). The reader's own pcurve projection is what
+    // fails on spline patches, so those faces get their trims spelled out.
+    // The UV trace is unwrapped continuously *along each loop* so consecutive
+    // edges land in one period window, and it starts from `inv`'s principal
+    // value, which is inside the exported surface's knot range.
+    let mut kept: Vec<(&Node, &Node, u32)> = Vec::new();
+    let mut surf_of_face: HashMap<NodeId, u32> = HashMap::new();
+    let mut pcurve_uv: HashMap<NodeId, Vec<(NodeId, Vec<P2>)>> = HashMap::new();
     for face in &faces {
         if let Some(only) = only {
             if !only.contains(&face.id) {
@@ -517,7 +566,72 @@ pub fn export_faces(graph: &Graph, tol: Option<f64>, only: Option<&[NodeId]>) ->
             skipped += 1;
             continue;
         };
+        surf_of_face.insert(face.id, surf_id);
+        kept.push((*face, snode, surf_id));
 
+        if snode.name != "B_SURFACE" {
+            continue;
+        }
+        let Some(surf) = crate::geom::surfaces::make_surface(graph, snode) else {
+            continue;
+        };
+        for lp in graph.face_loops(face) {
+            let mut prev: Option<P2> = None;
+            for he in graph.loop_halfedges(lp) {
+                let Some(edge) = graph.deref(he, "edge") else {
+                    continue;
+                };
+                let Some(pts) = sampler.get(graph, edge) else {
+                    continue;
+                };
+                let fwd = he.sense_positive();
+                let mut uvs: Vec<P2> = Vec::with_capacity(pts.len());
+                let walk: Box<dyn Iterator<Item = &P3>> = if fwd {
+                    Box::new(pts.iter())
+                } else {
+                    Box::new(pts.iter().rev())
+                };
+                for p in walk {
+                    let mut c = surf.inv(*p);
+                    for (dim, per) in [(0usize, surf.period_u()), (1usize, surf.period_v())] {
+                        let Some(pp) = per else { continue };
+                        if let Some(pr) = prev {
+                            c[dim] -= pp * ((c[dim] - pr[dim]) / pp).round();
+                        }
+                    }
+                    uvs.push(c);
+                    prev = Some(c);
+                }
+                // Stored in the edge's own direction, matching its 3-D
+                // polyline point for point.
+                if !fwd {
+                    uvs.reverse();
+                }
+                pcurve_uv.entry(edge.id).or_default().push((face.id, uvs));
+            }
+        }
+    }
+
+    // A pcurve's parameter-space context, created on first use.
+    let mut ctx2d: Option<u32> = None;
+    let pcurve = |w: &mut W,
+                  ctx2d: &mut Option<u32>,
+                  surf_id: u32,
+                  uvs: &[P2],
+                  knots: &[f64]|
+     -> Option<u32> {
+        let c2 = polyline_bspline_2d(w, uvs, knots)?;
+        let ctx = *ctx2d.get_or_insert_with(|| {
+            w.add(
+                "(GEOMETRIC_REPRESENTATION_CONTEXT(2)\
+                 PARAMETRIC_REPRESENTATION_CONTEXT()REPRESENTATION_CONTEXT('',''))",
+            )
+        });
+        let dr = w.add(&format!("DEFINITIONAL_REPRESENTATION('',(#{c2}),#{ctx})"));
+        Some(w.add(&format!("PCURVE('',#{surf_id},#{dr})")))
+    };
+
+    for (face, snode, surf_id) in kept {
         // Gather each loop first: winding loops on a periodic surface must be
         // joined through a seam before they can bound anything.
         struct LoopRec {
@@ -591,7 +705,35 @@ pub fn export_faces(graph: &Graph, tol: Option<f64>, only: Option<&[NodeId]>) ->
                         } else {
                             vid(&mut w, &mut vert_ids, hm, *pts.last().unwrap())
                         };
-                        let ec = w.add(&format!("EDGE_CURVE('',#{v1},#{v2},#{curve_id},.T.)"));
+                        // B_SURFACE neighbours contributed UV images in pass
+                        // 1; carry them on the edge so the reader never has
+                        // to project. Twice from one face means the edge lies
+                        // on that surface's seam.
+                        let mut geom_id = curve_id;
+                        if let Some(entries) = pcurve_uv.get(&edge.id) {
+                            let knots = chord_knots(&pts);
+                            let mut pids = Vec::new();
+                            for (fid, uvs) in entries {
+                                if uvs.len() != pts.len() {
+                                    continue;
+                                }
+                                let Some(&sid) = surf_of_face.get(fid) else {
+                                    continue;
+                                };
+                                if let Some(pc) = pcurve(&mut w, &mut ctx2d, sid, uvs, &knots) {
+                                    pids.push(pc);
+                                }
+                            }
+                            if !pids.is_empty() && pids.len() <= 2 {
+                                let seam = pids.len() == 2 && entries[0].0 == entries[1].0;
+                                let kind = if seam { "SEAM_CURVE" } else { "SURFACE_CURVE" };
+                                geom_id = w.add(&format!(
+                                    "{kind}('',#{curve_id},{},.CURVE_3D.)",
+                                    list_u32(&pids)
+                                ));
+                            }
+                        }
+                        let ec = w.add(&format!("EDGE_CURVE('',#{v1},#{v2},#{geom_id},.T.)"));
                         let ent = EdgeEnt {
                             ec,
                             v1,
@@ -756,7 +898,37 @@ pub fn export_faces(graph: &Graph, tol: Option<f64>, only: Option<&[NodeId]>) ->
             let Some(seam_curve) = polyline_bspline(&mut w, &seam_pts) else {
                 continue;
             };
-            let seam_ec = w.add(&format!("EDGE_CURVE('',#{va},#{vb},#{seam_curve},.T.)"));
+            // On a B_SURFACE the seam's two UV images are also emitted: the
+            // straight path itself and its copy one period over, which is
+            // where the wire travels after winding round. The reader pairs
+            // them with the two traversals (ShapeFix reorders if we guessed
+            // the order wrong).
+            let mut seam_geom = seam_curve;
+            if snode.name == "B_SURFACE" && period.is_finite() {
+                let knots = chord_knots(&seam_pts);
+                let uv1: Vec<P2> = (0..=SEAM_STEPS)
+                    .map(|k| {
+                        let t = k as f64 / SEAM_STEPS as f64;
+                        [ua[0] + (ub[0] - ua[0]) * t, ua[1] + (ub[1] - ua[1]) * t]
+                    })
+                    .collect();
+                let uv2: Vec<P2> = uv1
+                    .iter()
+                    .map(|q| {
+                        let mut s = *q;
+                        s[dim] += sign_i * period;
+                        s
+                    })
+                    .collect();
+                let p1 = pcurve(&mut w, &mut ctx2d, surf_id, &uv1, &knots);
+                let p2 = pcurve(&mut w, &mut ctx2d, surf_id, &uv2, &knots);
+                if let (Some(p1), Some(p2)) = (p1, p2) {
+                    seam_geom = w.add(&format!(
+                        "SEAM_CURVE('',#{seam_curve},(#{p1},#{p2}),.CURVE_3D.)"
+                    ));
+                }
+            }
+            let seam_ec = w.add(&format!("EDGE_CURVE('',#{va},#{vb},#{seam_geom},.T.)"));
 
             // The rims must travel opposite ways round the period to bound a
             // band between them; reverse B's run when it agrees with A.

@@ -5,7 +5,7 @@
 
 use super::{add, cross, dist, dot, norm, scale, sub, unit, Curve, Surface, P3, TWO_PI};
 use crate::graph::Graph;
-use crate::value::Node;
+use crate::value::{Node, Value};
 
 // ── LINE ────────────────────────────────────────────────────────────────────
 
@@ -273,6 +273,39 @@ pub fn deboor_basis_deriv_into(
 }
 
 /// Expand a knot vector by its multiplicities.
+/// Read a paired knot/multiplicity node (`KNOT_SET`/`KNOT_MULT`) positionally,
+/// tolerating XT's padding convention: unused trailing slots hold the f64
+/// null sentinel and a zero multiplicity (helical thread surfaces ship this
+/// way). A null knot with nonzero multiplicity is real data we cannot read.
+pub(crate) fn knot_arrays(knode: &Node, mnode: &Node) -> Option<(Vec<f64>, Vec<i64>)> {
+    let mult = mnode.i64_vec("mult")?;
+    let kval = knode.field("knots")?;
+    let raw: Vec<&Value> = match kval {
+        Value::Array(items) => items.iter().collect(),
+        one => vec![one],
+    };
+    if raw.len() != mult.len() {
+        return None;
+    }
+    let mut ks = Vec::with_capacity(raw.len());
+    let mut ms = Vec::with_capacity(raw.len());
+    for (v, &m) in raw.iter().zip(&mult) {
+        match v.as_f64() {
+            Some(k) => {
+                ks.push(k);
+                ms.push(m);
+            }
+            None if matches!(v, Value::Null) && m == 0 => {} // padding slot
+            None => return None,
+        }
+    }
+    if ks.is_empty() {
+        None
+    } else {
+        Some((ks, ms))
+    }
+}
+
 pub(crate) fn expand_knots(knots: &[f64], mult: &[i64]) -> Option<Vec<f64>> {
     if knots.len() != mult.len() || knots.is_empty() {
         return None;
@@ -370,8 +403,7 @@ impl Nurbs {
         let rational = nc.bool("rational");
         let verts = graph.deref(nc, "bspline_vertices")?.f64_vec("vertices")?;
         let (cp, w) = split_vertices_nd(&verts, dim, rational, uv)?;
-        let knots = graph.deref(nc, "knots")?.f64_vec("knots")?;
-        let mult = graph.deref(nc, "knot_mult")?.i64_vec("mult")?;
+        let (knots, mult) = knot_arrays(graph.deref(nc, "knots")?, graph.deref(nc, "knot_mult")?)?;
         let knots = expand_knots(&knots, &mult)?;
         let ncp = cp.len();
         if ncp == 0 || degree == 0 || knots.len() <= ncp || knots.len() <= degree {
@@ -893,5 +925,58 @@ pub fn make_curve(graph: &Graph, node: &Node) -> Option<Box<dyn Curve>> {
             Polyline::new(pts).map(|c| Box::new(c) as Box<dyn Curve>)
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod knot_tests {
+    use super::*;
+
+    fn knot_node(knots: Vec<Value>) -> Node {
+        Node {
+            node_type: 0,
+            name: "KNOT_SET".into(),
+            id: 1,
+            count: Some(knots.len() as i32),
+            fields: vec![("knots".into(), Value::Array(knots))],
+        }
+    }
+
+    fn mult_node(mult: Vec<i64>) -> Node {
+        Node {
+            node_type: 0,
+            name: "KNOT_MULT".into(),
+            id: 2,
+            count: Some(mult.len() as i32),
+            fields: vec![(
+                "mult".into(),
+                Value::Array(mult.into_iter().map(|m| Value::I32(m as i32)).collect()),
+            )],
+        }
+    }
+
+    #[test]
+    fn padding_slots_are_dropped() {
+        // Thread surfaces pad the arrays: a null-sentinel knot paired with a
+        // zero multiplicity. The pair must vanish, not poison the read.
+        let k = knot_node(vec![Value::F64(0.0), Value::F64(1.0), Value::Null]);
+        let m = mult_node(vec![3, 3, 0]);
+        let (ks, ms) = knot_arrays(&k, &m).unwrap();
+        assert_eq!(ks, vec![0.0, 1.0]);
+        assert_eq!(ms, vec![3, 3]);
+    }
+
+    #[test]
+    fn a_null_knot_with_real_multiplicity_is_unreadable() {
+        let k = knot_node(vec![Value::F64(0.0), Value::Null, Value::F64(1.0)]);
+        let m = mult_node(vec![3, 1, 3]);
+        assert!(knot_arrays(&k, &m).is_none());
+    }
+
+    #[test]
+    fn mismatched_lengths_are_rejected() {
+        let k = knot_node(vec![Value::F64(0.0), Value::F64(1.0)]);
+        let m = mult_node(vec![3, 1, 3]);
+        assert!(knot_arrays(&k, &m).is_none());
     }
 }

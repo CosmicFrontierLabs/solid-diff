@@ -39,14 +39,20 @@ in the "parts that fail to mesh" budget, not as a silent fallback. Edge
 sampling lives on in `sample.rs` (`EdgeSampler`), which the STEP exporter and
 the OCCT face matcher share.
 
-The STEP exporter's two load-bearing choices: surfaces are exact wherever
+The STEP exporter's load-bearing choices: surfaces are exact wherever
 STEP has the type, and **edges are sampled polylines** from the shared
 `EdgeSampler` — that one choice sidesteps the two-arcs ambiguity, null-curve
 edges, `INTERSECTION` and `SP_CURVE` in a single move, and makes both faces
 of an edge reference one curve entity so the shell sews. Faces on closed
 surfaces get their seam emitted explicitly (the seam edge appears twice in
 the wire), because OCCT's reader-side `FixMissingSeam` measurably does not
-repair what it drops.
+repair what it drops. The same distrust of reader-side healing applies to
+`B_SURFACE` faces: their edges carry **explicit pcurves** (the same sampled
+points through `Surface::inv`, on the 3-D polyline's own knots), because the
+reader's pcurve *projection* is what failed on thread and vendor-import
+patches. XT pads knot arrays with a null-sentinel slot paired with a zero
+multiplicity — `knot_arrays` in `geom/curves.rs` tolerates that; reading the
+pair with plain `f64_vec` silently discards the whole surface.
 
 The corpus budgets in `tests/invariants.rs` ratchet the OCCT path — the
 shipped path — directly.
