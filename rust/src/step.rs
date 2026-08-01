@@ -1002,9 +1002,42 @@ pub fn export_faces(graph: &Graph, tol: Option<f64>, only: Option<&[NodeId]>) ->
             // Better a dubious seam than none: an unjoined winding pair is a
             // guaranteed mistrim, the original seam only a probable one.
             let fallback = original.filter(|o| !box_crosses(o.4));
-            let Some((va, pa, vb, pb, ua, ub)) = chosen.or(fallback) else {
+            let Some((va, pa, vb, pb, ua, mut ub)) = chosen.or(fallback) else {
                 continue;
             };
+            // When the OTHER dimension is also periodic (a torus), the band
+            // between two winding loops is ambiguous: [ua, ub] or its
+            // complement round the back, and the nearest-image seam always
+            // takes the short way -- rendering the wrong half of a collar.
+            // The fins know the answer: the face lies to the LEFT of the
+            // traversal under the outward normal, so rotate the loop's UV
+            // direction that way and make the seam leave its anchor on the
+            // interior side, even when that is the long way round.
+            let odim = 1 - dim;
+            let obound = if odim == 0 {
+                surf.period_u()
+            } else {
+                surf.period_v()
+            };
+            if let Some(operiod) = obound {
+                let dir = recs[i]
+                    .trace
+                    .windows(2)
+                    .map(|t| [t[1][0] - t[0][0], t[1][1] - t[0][1]])
+                    .find(|d| d[0].abs() + d[1].abs() > 1e-12);
+                if let Some(d) = dir {
+                    let outward_parametric = face.sense_positive() == snode.sense_positive();
+                    let interior = if outward_parametric {
+                        [-d[1], d[0]]
+                    } else {
+                        [d[1], -d[0]]
+                    };
+                    let have = ub[odim] - ua[odim];
+                    if interior[odim] * have < 0.0 && have.abs() > 1e-12 {
+                        ub[odim] -= operiod * have.signum();
+                    }
+                }
+            }
             if seam_debug {
                 eprintln!(
                     "seam: face {} loops {i}+{j} using ({:.4},{:.6})->({:.4},{:.6})",
