@@ -219,6 +219,19 @@ impl Mesh {
         self.triangles.is_empty()
     }
 
+    /// Overlay another body's mesh onto this one. FACE node ids are per-body
+    /// and can collide across bodies; that only perturbs diff colouring, and
+    /// each body arrives already oriented.
+    pub fn merge(&mut self, other: Mesh) {
+        let off = self.vertices.len() as u32;
+        self.vertices.extend(other.vertices);
+        self.triangles
+            .extend(other.triangles.into_iter().map(|t| t.map(|i| i + off)));
+        self.face_ids.extend(other.face_ids);
+        self.colors.extend(other.colors);
+        self.warnings.extend(other.warnings);
+    }
+
     /// Number of edges used by exactly one triangle (0 == closed surface).
     pub fn boundary_edge_count(&self) -> usize {
         let mut counts: HashMap<(u32, u32), u32> = HashMap::new();
@@ -404,6 +417,26 @@ impl Mesh {
 
 #[cfg(test)]
 mod edge_report_tests {
+    #[test]
+    fn merge_overlays_bodies_with_offset_indices() {
+        let mut a = Mesh {
+            vertices: vec![[0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            triangles: vec![[0, 1, 2]],
+            face_ids: vec![7],
+            ..Default::default()
+        };
+        let b = Mesh {
+            vertices: vec![[5.0; 3], [6.0, 5.0, 5.0], [5.0, 6.0, 5.0]],
+            triangles: vec![[0, 1, 2]],
+            face_ids: vec![9],
+            ..Default::default()
+        };
+        a.merge(b);
+        assert_eq!(a.vertices.len(), 6);
+        assert_eq!(a.triangles, vec![[0, 1, 2], [3, 4, 5]]);
+        assert_eq!(a.face_ids, vec![7, 9]);
+    }
+
     use super::*;
 
     /// Closed, consistently-wound tetrahedron.
