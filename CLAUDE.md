@@ -112,6 +112,16 @@ themselves, so a wrong answer can be detected as wrong:
 The split is deliberate: assert exactly where the maths says the answer is
 exact, ratchet where we know we are approximating.
 
+## Show renders as you go
+
+When a change touches anything visual — tessellation, trimming, seams,
+orientation, the renderer — render the affected parts and **show the images
+inline as you work** (`agent-portal show <png>` in portal sessions), not just
+the edge-report numbers. Every regression class this project has hit was
+obvious in a picture before it was legible in a statistic, and several
+"fixes" (superimposed flat patterns, blob clamp rings) only got caught
+because a human saw the render. Numbers gate; pictures diagnose.
+
 ## Measuring render quality
 
 This is a rendering tool, not a meshing one: the number that matters is
