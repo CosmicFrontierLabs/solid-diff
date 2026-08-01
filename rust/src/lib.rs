@@ -126,5 +126,30 @@ pub fn mesh_file(path: &Path, tol: Option<f64>) -> Result<Mesh> {
         return Ok(tessellate(&Graph::new(nodes), tol));
     }
     let graphs = body_graphs(path)?;
-    Ok(tessellate(&graphs[0].graph, tol))
+    // A part is often several bodies (a connector: shell, coupling nut,
+    // contacts), and rendering only the largest loses the rest — reviewers
+    // read that as "the threads are missing". Mesh every solid body and
+    // overlay them; construction sheets stay out. When no body is solid,
+    // fall back to the largest body alone, as before.
+    let mut out = Mesh::default();
+    for bg in &graphs {
+        let solid = bg
+            .graph
+            .by_type("BODY")
+            .first()
+            .and_then(|b| b.i64("body_type"))
+            .map(|t| t == 1)
+            .unwrap_or(true);
+        if !solid {
+            continue;
+        }
+        let m = tessellate(&bg.graph, tol);
+        if !m.is_empty() {
+            out.merge(m);
+        }
+    }
+    if out.is_empty() {
+        out = tessellate(&graphs[0].graph, tol);
+    }
+    Ok(out)
 }
