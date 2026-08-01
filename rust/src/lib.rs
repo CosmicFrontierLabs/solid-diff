@@ -127,12 +127,17 @@ pub fn mesh_file(path: &Path, tol: Option<f64>) -> Result<Mesh> {
     }
     let graphs = body_graphs(path)?;
     // A part is often several bodies (a connector: shell, coupling nut,
-    // contacts), and rendering only the largest loses the rest — reviewers
-    // read that as "the threads are missing". Mesh every solid body and
-    // overlay them; construction sheets stay out. When no body is solid,
-    // fall back to the largest body alone, as before.
+    // contacts), and rendering only the largest loses the rest. But the file
+    // also carries OTHER streams -- sibling configurations (a sheet-metal
+    // part's flat pattern) and ResolvedFeatures copies -- and merging those
+    // superimposes the bent part with its unbent blank. Sibling bodies of one
+    // configuration live in one stream, so merge exactly the solid bodies
+    // that share the best body's stream and nothing else.
     let mut out = Mesh::default();
     for bg in &graphs {
+        if bg.stream != graphs[0].stream {
+            continue;
+        }
         let solid = bg
             .graph
             .by_type("BODY")
