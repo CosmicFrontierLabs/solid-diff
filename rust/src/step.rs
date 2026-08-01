@@ -168,6 +168,30 @@ fn endpoint_mults(n: usize) -> Vec<usize> {
     mults
 }
 
+/// Does the open interior of segment `a..b` cross the polyline (shifted by
+/// `shift` along coordinate `dim`)? Touches at the segment's own endpoints do
+/// not count: a seam legitimately starts and ends on a loop.
+fn seg_hits_polyline(a: P2, b: P2, pts: &[P2], shift: f64, dim: usize) -> bool {
+    let r = [b[0] - a[0], b[1] - a[1]];
+    for wnd in pts.windows(2) {
+        let (mut p, mut q) = (wnd[0], wnd[1]);
+        p[dim] += shift;
+        q[dim] += shift;
+        let sv = [q[0] - p[0], q[1] - p[1]];
+        let denom = r[0] * sv[1] - r[1] * sv[0];
+        if denom.abs() < 1e-30 {
+            continue;
+        }
+        let ap = [p[0] - a[0], p[1] - a[1]];
+        let t = (ap[0] * sv[1] - ap[1] * sv[0]) / denom;
+        let u = (ap[0] * r[1] - ap[1] * r[0]) / denom;
+        if t > 1e-6 && t < 1.0 - 1e-6 && (0.0..=1.0).contains(&u) {
+            return true;
+        }
+    }
+    false
+}
+
 /// Degree-1 B-spline through the given points, chord-length parameterized.
 /// This is how every sampled polyline (edge or sweep section) is carried.
 fn polyline_bspline(w: &mut W, pts: &[P3]) -> Option<u32> {
@@ -569,9 +593,6 @@ pub fn export_faces(graph: &Graph, tol: Option<f64>, only: Option<&[NodeId]>) ->
         surf_of_face.insert(face.id, surf_id);
         kept.push((*face, snode, surf_id));
 
-        if snode.name != "B_SURFACE" {
-            continue;
-        }
         let Some(surf) = crate::geom::surfaces::make_surface(graph, snode) else {
             continue;
         };
@@ -639,6 +660,10 @@ pub fn export_faces(graph: &Graph, tol: Option<f64>, only: Option<&[NodeId]>) ->
             run: Vec<(u32, bool)>,
             /// Vertex entity + point where the traversal starts.
             anchor: Option<(u32, P3)>,
+            /// Every vertex on the loop: a seam may start at any of them.
+            anchors: Vec<(u32, P3)>,
+            /// Unwrapped UV trace of the loop's samples.
+            trace: Vec<P2>,
             /// (period dimension, direction) when the loop winds a period.
             winding: Option<(usize, f64)>,
             /// Unwrapped UV bounding box of the loop's samples.
@@ -651,6 +676,7 @@ pub fn export_faces(graph: &Graph, tol: Option<f64>, only: Option<&[NodeId]>) ->
             let mut run: Vec<(u32, bool)> = Vec::new();
             let mut chain: Vec<P3> = Vec::new();
             let mut anchor: Option<(u32, P3)> = None;
+            let mut anchors: Vec<(u32, P3)> = Vec::new();
             for he in graph.loop_halfedges(lp) {
                 let Some(edge) = graph.deref(he, "edge") else {
                     continue; // vertex loop: no edge to walk
@@ -747,6 +773,11 @@ pub fn export_faces(graph: &Graph, tol: Option<f64>, only: Option<&[NodeId]>) ->
                 };
                 let fwd = he.sense_positive();
                 run.push((ent.ec, fwd));
+                anchors.push(if fwd {
+                    (ent.v1, ent.first)
+                } else {
+                    (ent.v2, ent.last)
+                });
                 if anchor.is_none() {
                     anchor = Some(if fwd {
                         (ent.v1, ent.first)
@@ -771,6 +802,7 @@ pub fn export_faces(graph: &Graph, tol: Option<f64>, only: Option<&[NodeId]>) ->
             let mut winding = None;
             let mut uv_lo = [f64::INFINITY; 2];
             let mut uv_hi = [f64::NEG_INFINITY; 2];
+            let mut trace: Vec<P2> = Vec::new();
             if let Some(surf) = surf_eval.as_ref() {
                 // One continuous unwrapped trace serves the winding test and
                 // the bbox both.
@@ -791,6 +823,7 @@ pub fn export_faces(graph: &Graph, tol: Option<f64>, only: Option<&[NodeId]>) ->
                         uv_lo[dim] = uv_lo[dim].min(c[dim]);
                         uv_hi[dim] = uv_hi[dim].max(c[dim]);
                     }
+                    trace.push(c);
                     prev = Some(c);
                 }
                 for (dim, period) in [(0usize, surf.period_u()), (1usize, surf.period_v())] {
@@ -804,6 +837,8 @@ pub fn export_faces(graph: &Graph, tol: Option<f64>, only: Option<&[NodeId]>) ->
             recs.push(LoopRec {
                 run,
                 anchor,
+                anchors,
+                trace,
                 winding,
                 uv_lo,
                 uv_hi,
@@ -849,42 +884,132 @@ pub fn export_faces(graph: &Graph, tol: Option<f64>, only: Option<&[NodeId]>) ->
             else {
                 continue;
             };
-            let (Some((va, pa)), Some((vb, pb))) = (recs[i].anchor, recs[j].anchor) else {
-                continue;
-            };
             let Some(surf) = surf_eval.as_ref() else {
                 continue;
             };
-            // The seam must not cross any other loop, or its wire intersects
-            // that loop's wire and the face mistrims. Check the straight UV
-            // path between the anchors against every other loop's box; when
-            // something is in the way, leave the face to the gate rather
-            // than guess.
             let period = if dim == 0 {
                 surf.period_u()
             } else {
                 surf.period_v()
             }
             .unwrap_or(f64::INFINITY);
-            let ua = surf.inv(pa);
-            let mut ub = surf.inv(pb);
-            for (d, per) in [(0usize, surf.period_u()), (1usize, surf.period_v())] {
-                let Some(p) = per else { continue };
-                ub[d] -= p * ((ub[d] - ua[d]) / p).round();
-            }
-            let margin = period * 0.02;
-            let crosses = recs.iter().enumerate().any(|(k, r)| {
-                if k == i || k == j || r.run.is_empty() || !r.uv_lo[dim].is_finite() {
-                    return false;
-                }
-                // Compare in the same period window as the anchor.
-                let shift =
-                    period * (((r.uv_lo[dim] + r.uv_hi[dim]) * 0.5 - ua[dim]) / period).round();
-                let (lo, hi) = (r.uv_lo[dim] - shift, r.uv_hi[dim] - shift);
-                ua[dim] >= lo - margin && ua[dim] <= hi + margin
-            });
-            if crosses {
+            if !period.is_finite() {
                 continue;
+            }
+            // The seam is a straight UV segment between one vertex of each
+            // loop. Any pair closes the topology, but a bad pair draws a long
+            // spiral that straddles the period boundary or slices through a
+            // loop's own wiggles, and the reader mistrims -- half the
+            // hoist-ring shank vanished exactly this way. So audition every
+            // vertex pair: shortest travel in the winding coordinate wins,
+            // and a candidate whose segment crosses any loop's trace (in any
+            // adjacent period window) is rejected outright.
+            let clear = |ua: P2, ub: P2| -> bool {
+                recs.iter().all(|r| {
+                    if r.trace.len() < 2 || !r.uv_lo[dim].is_finite() {
+                        return true;
+                    }
+                    let mid = (r.uv_lo[dim] + r.uv_hi[dim]) * 0.5;
+                    let smid = (ua[dim] + ub[dim]) * 0.5;
+                    let base = period * ((mid - smid) / period).round();
+                    [-period, 0.0, period]
+                        .iter()
+                        .all(|&sh| !seg_hits_polyline(ua, ub, &r.trace, sh - base, dim))
+                })
+            };
+            let wrap = |ua: P2, pb: P3| -> P2 {
+                let mut ub = surf.inv(pb);
+                for (d, per) in [(0usize, surf.period_u()), (1usize, surf.period_v())] {
+                    let Some(p) = per else { continue };
+                    ub[d] -= p * ((ub[d] - ua[d]) / p).round();
+                }
+                ub
+            };
+            // The loops' own first vertices are the seam of record; only when
+            // that segment provably crosses a loop's trace (the hoist-ring
+            // shank: a long spiral straddling the period boundary) is the
+            // seam re-auditioned over every vertex pair, shortest travel in
+            // the winding coordinate first.
+            // A seam whose u-interval crosses the surface's natural
+            // parameter cut (u = k * period) is the one the reader mangles:
+            // its own pcurve reconstruction has to wrap there, and the
+            // hoist-ring shank lost half its band to exactly that. A seam
+            // that stays inside one window is left alone -- thin thread
+            // bands cross their own wiggly traces all the time and the
+            // reader absorbs it.
+            let straddles = |ua: P2, ub: P2| -> bool {
+                let (lo, hi) = (ua[dim].min(ub[dim]), ua[dim].max(ub[dim]));
+                (lo / period).floor() != (hi / period).floor()
+            };
+            let seam_debug = std::env::var_os("SD_SEAM_DEBUG").is_some();
+            let original = match (recs[i].anchor, recs[j].anchor) {
+                (Some((va, pa)), Some((vb, pb))) => {
+                    let ua = surf.inv(pa);
+                    let ub = wrap(ua, pb);
+                    Some((va, pa, vb, pb, ua, ub))
+                }
+                _ => None,
+            };
+            // The pre-audition guard, kept verbatim for the in-window case: a
+            // third loop's box over the anchor means the corridor is occupied
+            // and the join is declined rather than guessed.
+            let box_crosses = |ua: P2| -> bool {
+                let margin = period * 0.02;
+                recs.iter().enumerate().any(|(k, r)| {
+                    if k == i || k == j || r.run.is_empty() || !r.uv_lo[dim].is_finite() {
+                        return false;
+                    }
+                    let shift =
+                        period * (((r.uv_lo[dim] + r.uv_hi[dim]) * 0.5 - ua[dim]) / period).round();
+                    let (lo, hi) = (r.uv_lo[dim] - shift, r.uv_hi[dim] - shift);
+                    ua[dim] >= lo - margin && ua[dim] <= hi + margin
+                })
+            };
+            // In-window originals get exactly the old treatment; only a seam
+            // that crosses the parameter cut is re-auditioned.
+            let mut chosen = None;
+            if let Some(orig) = original {
+                if !straddles(orig.4, orig.5) {
+                    if box_crosses(orig.4) {
+                        continue;
+                    }
+                    chosen = Some(orig);
+                }
+            }
+            if chosen.is_none() {
+                // Audition every vertex pair: shortest winding travel wins,
+                // cut-straddling candidates only as a last resort, and a
+                // candidate whose segment crosses a loop trace is rejected.
+                let mut best_score = f64::INFINITY;
+                for &(va, pa) in &recs[i].anchors {
+                    let ua = surf.inv(pa);
+                    for &(vb, pb) in &recs[j].anchors {
+                        let ub = wrap(ua, pb);
+                        let mut score = (ub[dim] - ua[dim]).abs();
+                        if straddles(ua, ub) {
+                            score += period * 10.0;
+                        }
+                        if score >= best_score {
+                            continue;
+                        }
+                        if clear(ua, ub) {
+                            best_score = score;
+                            chosen = Some((va, pa, vb, pb, ua, ub));
+                        }
+                    }
+                }
+            }
+            // Better a dubious seam than none: an unjoined winding pair is a
+            // guaranteed mistrim, the original seam only a probable one.
+            let fallback = original.filter(|o| !box_crosses(o.4));
+            let Some((va, pa, vb, pb, ua, ub)) = chosen.or(fallback) else {
+                continue;
+            };
+            if seam_debug {
+                eprintln!(
+                    "seam: face {} loops {i}+{j} using ({:.4},{:.6})->({:.4},{:.6})",
+                    face.id, ua[0], ua[1], ub[0], ub[1]
+                );
             }
             const SEAM_STEPS: usize = 16;
             let mut seam_pts: Vec<P3> = Vec::with_capacity(SEAM_STEPS + 1);
