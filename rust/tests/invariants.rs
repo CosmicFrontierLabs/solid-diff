@@ -596,7 +596,7 @@ const MESH_BUDGET: &[(&str, usize)] = &[
     // (2,296); the rest of the corpus is at or below the native tail.
     // Lowering this means fixing the exporter for those parts, not tuning
     // a gate.
-    ("open edges", 7515),
+    ("open edges", 7505),
     ("parts that fail to mesh", 3),
 ];
 
